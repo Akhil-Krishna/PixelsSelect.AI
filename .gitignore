@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# Environment files — NEVER commit these
+.env
+.env.local
+.env.production
+.env.staging
+*.env

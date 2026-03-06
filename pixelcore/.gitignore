@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables — NEVER commit
+.env
+.env.*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads and recordings — user data
+uploads/
+recordings/
+*.pdf
+*.mp4
+*.webm
+*.wav
+*.mp3
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Alembic (keep versions folder but not cache)
+alembic/versions/__pycache__/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+
+# macOS
+.DS_Store

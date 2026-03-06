@@ -1,0 +1,371 @@
+"""
+Interview session — candidate chat, AI controls, live metrics, completion.
+"""
+import logging
+from datetime import datetime, timezone
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.core.database import get_db
+from app.core.deps import get_current_user
+from app.models.interview import (
+    Interview, InterviewInterviewer, InterviewMessage, InterviewStatus, VisionLog,
+)
+from app.models.user import User
+from app.schemas import (
+    ChatMessage, ChatResponse, CompleteInterviewRequest, EvaluationResult,
+    InterviewWithInterviewers, InterviewerQuestion, MessageOut, ScoreBreakdown,
+)
+from app.services.access_policy import AccessPolicy
+from app.services.interview_orchestrator import (
+    chat_turn, complete_interview_evaluation, start_interview_ai,
+)
+from app.services.vision_service import aggregate_vision_logs
+
+router = APIRouter(prefix="/interview-session", tags=["interview-session"])
+logger = logging.getLogger(__name__)
+
+
+async def _get_iv(token: str, db: AsyncSession) -> Interview:
+    res = await db.execute(
+        select(Interview)
+        .options(
+            selectinload(Interview.messages),
+            selectinload(Interview.interviewers)
+            .selectinload(InterviewInterviewer.interviewer)
+            .selectinload(User.organisation),
+            selectinload(Interview.candidate).selectinload(User.organisation),
+            selectinload(Interview.hr).selectinload(User.organisation),
+        )
+        .where(Interview.access_token == token)
+    )
+    iv = res.scalar_one_or_none()
+    if not iv:
+        raise HTTPException(404, "Interview not found")
+    return iv
+
+
+@router.get("/join/{interview_token}", response_model=InterviewWithInterviewers)
+async def join_interview(
+    interview_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    AccessPolicy.ensure_interview_viewer(iv, current_user)
+    if iv.status == InterviewStatus.CANCELLED:
+        raise HTTPException(400, "Interview cancelled")
+    return iv  # type: ignore[return-value]
+
+
+@router.post("/start/{interview_token}")
+async def start_interview(
+    interview_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    AccessPolicy.ensure_candidate_owner(iv, current_user)
+
+    if iv.status == InterviewStatus.COMPLETED:
+        raise HTTPException(400, "Interview already completed")
+
+    if iv.status == InterviewStatus.IN_PROGRESS:
+        msgs = sorted(iv.messages, key=lambda m: m.timestamp)
+        return {
+            "status": "resumed",
+            "messages": [MessageOut.model_validate(m) for m in msgs],
+            "ai_paused": iv.ai_paused,
+        }
+
+    iv.status = InterviewStatus.IN_PROGRESS
+    iv.started_at = datetime.now(timezone.utc)
+    await db.flush()
+
+    ai_result = await start_interview_ai(iv)
+    ai_msg = InterviewMessage(interview_id=iv.id, role="ai", content=ai_result.get("text", ""))
+    db.add(ai_msg)
+    await db.flush()
+    await db.refresh(ai_msg)
+
+    return {"status": "started", "messages": [MessageOut.model_validate(ai_msg)], "ai_paused": False}
+
+
+@router.post("/chat/{interview_token}", response_model=List[MessageOut])
+async def chat(
+    interview_token: str,
+    payload: ChatMessage,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    AccessPolicy.ensure_candidate_owner(iv, current_user)
+
+    if iv.status != InterviewStatus.IN_PROGRESS:
+        raise HTTPException(400, "Interview not in progress")
+
+    candidate_msg = InterviewMessage(
+        interview_id=iv.id, role="candidate",
+        content=payload.content, code_snippet=payload.code_snippet,
+    )
+    db.add(candidate_msg)
+    await db.flush()
+    await db.refresh(candidate_msg)
+
+    if iv.ai_paused:
+        return [MessageOut.model_validate(candidate_msg)]
+
+    msgs = sorted(iv.messages, key=lambda m: m.timestamp)
+    ai_result = await chat_turn(iv, msgs, payload.content, payload.code_snippet)
+    ai_text = ai_result.get("text", "")
+    is_complete = bool(ai_result.get("is_complete"))
+
+    ai_msg = InterviewMessage(interview_id=iv.id, role="ai", content=ai_text)
+    db.add(ai_msg)
+    await db.flush()
+    await db.refresh(ai_msg)
+
+    return [MessageOut.model_validate(candidate_msg), MessageOut.model_validate(ai_msg)]
+
+
+@router.post("/end/{interview_token}")
+async def end_interview_simple(
+    interview_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    No-body alias called by the candidate's frontend when the interview finishes.
+    Delegates to the full evaluation pipeline with empty optional fields.
+    """
+    empty_payload = CompleteInterviewRequest()
+    return await _run_complete(interview_token, empty_payload, db, current_user)
+
+
+@router.post("/complete/{interview_token}", response_model=EvaluationResult)
+async def complete_interview(
+    interview_token: str,
+    payload: CompleteInterviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return await _run_complete(interview_token, payload, db, current_user)
+
+
+async def _run_complete(
+    interview_token: str,
+    payload: CompleteInterviewRequest,
+    db: AsyncSession,
+    current_user: User,
+):
+    iv = await _get_iv(interview_token, db)
+    AccessPolicy.ensure_candidate_owner(iv, current_user)
+
+    if iv.status == InterviewStatus.COMPLETED:
+        return EvaluationResult(
+            overall_score=float(iv.overall_score or 0),
+            answer_score=float(iv.answer_score or 0),
+            code_score=float(iv.code_score) if iv.code_score is not None else None,
+            emotion_score=float(iv.emotion_score) if iv.emotion_score is not None else None,
+            integrity_score=float(iv.integrity_score) if iv.integrity_score is not None else None,
+            passed=bool(iv.passed),
+            ai_feedback=iv.ai_feedback or "",
+            cheating_score=float(iv.cheating_score) if iv.cheating_score is not None else None,
+            cheating_flags=(iv.emotion_scores or {}).get("cheating_flags", []),
+        )
+
+    logs_res = await db.execute(
+        select(VisionLog).where(VisionLog.interview_id == iv.id).order_by(VisionLog.timestamp)
+    )
+    vision_logs = logs_res.scalars().all()
+    vision_summary: Optional[dict] = aggregate_vision_logs(vision_logs) if vision_logs else None
+    if not vision_summary and payload.emotion_data:
+        vision_summary = payload.emotion_data.model_dump()
+    if vision_summary and payload.tab_switches:
+        vision_summary["tab_switches"] = payload.tab_switches
+
+    final_cheating: Optional[float] = None
+    if vision_logs:
+        final_cheating = round(float(max(l.cheating_score for l in vision_logs)), 1)
+    elif payload.cheating_score is not None:
+        final_cheating = float(payload.cheating_score)
+
+    msgs = sorted(iv.messages, key=lambda m: m.timestamp)
+    evaluation = await complete_interview_evaluation(iv, msgs, vision_summary, final_cheating)
+
+    iv.status = InterviewStatus.COMPLETED
+    iv.ended_at = datetime.now(timezone.utc)
+    iv.answer_score = evaluation.get("answer_score")
+    iv.code_score = evaluation.get("code_score")
+    iv.emotion_score = evaluation.get("emotion_score")
+    iv.integrity_score = evaluation.get("integrity_score")
+    iv.cheating_score = evaluation.get("cheating_score")
+    iv.overall_score = evaluation.get("overall_score")
+    iv.passed = evaluation.get("passed")
+    iv.ai_feedback = evaluation.get("ai_feedback")
+    iv.emotion_scores = vision_summary
+    await db.flush()
+
+    score_bkd_data = {
+        "answer_score": evaluation.get("answer_score", 0),
+        "code_score": evaluation.get("code_score"),
+        "emotion_score": evaluation.get("emotion_score"),
+        "integrity_score": evaluation.get("integrity_score"),
+        "overall_score": evaluation.get("overall_score", 0),
+        "passed": evaluation.get("passed", False),
+        "weights_used": evaluation.get("weights_used", {}),
+    }
+
+    return EvaluationResult(
+        overall_score=evaluation.get("overall_score", 0),
+        answer_score=evaluation.get("answer_score", 0),
+        code_score=evaluation.get("code_score"),
+        emotion_score=evaluation.get("emotion_score"),
+        integrity_score=evaluation.get("integrity_score"),
+        passed=bool(evaluation.get("passed")),
+        strengths=evaluation.get("strengths", []),
+        weaknesses=evaluation.get("weaknesses", []),
+        ai_feedback=evaluation.get("ai_feedback", ""),
+        cheating_score=evaluation.get("cheating_score"),
+        score_breakdown=ScoreBreakdown(**score_bkd_data),
+        cheating_flags=vision_summary.get("cheating_flags", []) if vision_summary else [],
+    )
+
+
+@router.get("/messages/{interview_token}", response_model=List[MessageOut])
+async def get_messages(
+    interview_token: str,
+    since_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    AccessPolicy.ensure_interview_viewer(iv, current_user)
+    msgs = sorted(iv.messages, key=lambda m: m.timestamp)
+    if since_id:
+        ids = [m.id for m in msgs]
+        if since_id in ids:
+            msgs = msgs[ids.index(since_id) + 1:]
+    return [MessageOut.model_validate(m) for m in msgs]
+
+
+@router.get("/metrics/{interview_token}")
+async def get_live_metrics(
+    interview_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    AccessPolicy.ensure_interview_viewer(iv, current_user)
+
+    recent_res = await db.execute(
+        select(VisionLog)
+        .where(VisionLog.interview_id == iv.id)
+        .order_by(desc(VisionLog.timestamp))
+        .limit(10)
+    )
+    recent = recent_res.scalars().all()
+
+    if not recent:
+        return {
+            "frames_analyzed": 0, "status": iv.status.value, "ai_paused": iv.ai_paused,
+            "confidence": None, "engagement": None, "stress": None,
+            "cheating_score": 0.0, "cheating_flags": [], "tab_switches": 0,
+            "look_away_count": 0, "multi_face_count": 0, "gaze_ok": True,
+            "dominant_emotion": None, "face_count": None,
+        }
+
+    all_res = await db.execute(select(VisionLog).where(VisionLog.interview_id == iv.id))
+    all_logs = all_res.scalars().all()
+    latest = recent[0]
+
+    def _avg(vals, default=None):
+        return round(sum(vals) / len(vals), 1) if vals else default
+
+    confs = [l.confidence_score for l in recent if l.confidence_score is not None]
+    engs = [l.engagement_score for l in recent if l.engagement_score is not None]
+    strs = [l.stress_score for l in recent if l.stress_score is not None]
+    cheats = [l.cheating_score for l in recent if l.cheating_score is not None]
+
+    look_away = sum(1 for l in all_logs if (l.face_count or 1) == 0)
+    multi_face = sum(1 for l in all_logs if (l.face_count or 1) > 1)
+
+    all_flags: list = []
+    for l in all_logs:
+        if isinstance(l.cheating_flags, list):
+            all_flags.extend(l.cheating_flags)
+        elif isinstance(l.cheating_flags, dict):
+            all_flags.extend(l.cheating_flags.get("flags", []))
+
+    return {
+        "frames_analyzed": len(all_logs),
+        "confidence": _avg(confs),
+        "engagement": _avg(engs),
+        "stress": _avg(strs),
+        "dominant_emotion": latest.dominant_emotion,
+        "face_count": latest.face_count,
+        "cheating_score": round(max(cheats), 1) if cheats else 0.0,
+        "cheating_flags": list(set(all_flags))[-5:],
+        "tab_switches": latest.tab_switch_count or 0,
+        "look_away_count": look_away,
+        "multi_face_count": multi_face,
+        "gaze_ok": (latest.face_count or 1) > 0,
+        "ai_paused": iv.ai_paused,
+        "status": iv.status.value,
+    }
+
+
+@router.post("/pause-ai/{interview_token}")
+async def pause_ai(
+    interview_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    if not AccessPolicy.is_org_viewer(iv, current_user):
+        raise HTTPException(403, "Access denied")
+    iv.ai_paused = True
+    await db.flush()
+    return {"ai_paused": True}
+
+
+@router.post("/resume-ai/{interview_token}")
+async def resume_ai(
+    interview_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    if not AccessPolicy.is_org_viewer(iv, current_user):
+        raise HTTPException(403, "Access denied")
+    iv.ai_paused = False
+    await db.flush()
+    return {"ai_paused": False}
+
+
+@router.post("/ask/{interview_token}", response_model=MessageOut)
+async def interviewer_ask(
+    interview_token: str,
+    payload: InterviewerQuestion,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    if not AccessPolicy.is_org_viewer(iv, current_user):
+        raise HTTPException(403, "Access denied")
+    if iv.status != InterviewStatus.IN_PROGRESS:
+        raise HTTPException(400, "Interview not in progress")
+
+    msg = InterviewMessage(
+        interview_id=iv.id,
+        role="interviewer",
+        content=f"[Interviewer — {current_user.full_name}]: {payload.question}",
+    )
+    db.add(msg)
+    await db.flush()
+    await db.refresh(msg)
+    return MessageOut.model_validate(msg)

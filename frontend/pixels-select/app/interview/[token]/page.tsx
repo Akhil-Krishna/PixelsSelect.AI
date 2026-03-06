@@ -1,0 +1,702 @@
+'use client';
+
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams } from 'next/navigation';
+import './interview.css';
+import { Message, InterviewSession } from '../../../lib/types';
+import { apiCall, API_BASE } from '../../../lib/api';
+import { useWebRTC } from '../../../hooks/useWebRTC';
+
+// Components
+import { VideoStage } from '../../../components/interview/VideoStage';
+import { ChatPanel } from '../../../components/interview/ChatPanel';
+import { StartOverlay } from '../../../components/interview/StartOverlay';
+import { CompleteOverlay } from '../../../components/interview/CompleteOverlay';
+
+const VISION_INTERVAL_MS = 1500;
+
+interface ScoreBox { label: string; val: number; color: string; }
+interface CompletedState { title: string; sub: string; scores: ScoreBox[]; }
+
+export default function InterviewPage() {
+    const params = useParams();
+    const token = params.token as string;
+
+    // ── Core state ────────────────────────────────────────────────────────────
+    const [session, setSession] = useState<InterviewSession | null>(null);
+    const [loadError, setLoadError] = useState('');
+    const [started, setStarted] = useState(false);
+    const [completed, setCompleted] = useState(false);
+    const [completedData, setCompletedData] = useState<CompletedState | null>(null);
+    const [startLoading, setStartLoading] = useState(false);
+    const [startError, setStartError] = useState('');
+
+    // ── Messages ───────────────────────────────────────────────────────────────
+    const [messages, setMessages] = useState<Message[]>([]);
+
+    // ── Input state ───────────────────────────────────────────────────────────
+    const [textInput, setTextInput] = useState('');
+    const [codeInput, setCodeInput] = useState('');
+    const [codeLang, setCodeLang] = useState('python');
+    const [codeOpen, setCodeOpen] = useState(false);
+    const [sending, setSending] = useState(false);
+
+    // ── Voice / STT ───────────────────────────────────────────────────────────
+    const [voiceOn, setVoiceOn] = useState(true);
+    const [isListening, setIsListening] = useState(false);
+    const [sttStatus, setSttStatus] = useState('');
+    const voiceOnRef = useRef(true);
+    const isListeningRef = useRef(false);
+    const isTtsSpeaking = useRef(false);
+    const pendingAutoListen = useRef(false);
+    const ttsSeq = useRef(0);
+    const whisperRecorder = useRef<MediaRecorder | null>(null);
+    const whisperChunks = useRef<Blob[]>([]);
+    const audioCtxRef = useRef<AudioContext | null>(null);
+    const vadRafRef = useRef<number | null>(null);
+    const maxListenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Stable refs so empty-dep useCallbacks always call the latest version
+    const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
+    const speakRef = useRef<((text: string) => void) | null>(null);
+
+    // ── Media / Timer ─────────────────────────────────────────────────────────
+    const [muted, setMuted] = useState(false);
+    const [camOff, setCamOff] = useState(false);
+    const [elapsed, setElapsed] = useState(0);
+    const [isCritical, setIsCritical] = useState(false);
+    const [isLive, setIsLive] = useState(false);
+    const [isRecording, setIsRecording] = useState(false);
+    const [jwtToken, setJwtToken] = useState('');
+    const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+    const [remoteStreams, setRemoteStreams] = useState<import('../../../hooks/useWebRTC').RemoteParticipant[]>([]);
+
+    // ── Vision metrics ────────────────────────────────────────────────────────
+    const [qCount, setQCount] = useState(0);
+    const [rCount, setRCount] = useState(0);
+    const [tabSwitches, setTabSwitches] = useState(0);
+    const [lookAway, setLookAway] = useState(0);
+    const [multiFace, setMultiFace] = useState(0);
+    const [faceCount, setFaceCount] = useState(1);
+    const [gaze, setGaze] = useState('OK');
+    const [emotion, setEmotion] = useState('–');
+    const [aiPaused, setAiPaused] = useState(false);
+
+    // ── Refs ──────────────────────────────────────────────────────────────────
+    const localVideoRef = useRef<HTMLVideoElement>(null);
+    const previewVideoRef = useRef<HTMLVideoElement>(null);
+    const camStream = useRef<MediaStream | null>(null);
+    const recorder = useRef<MediaRecorder | null>(null);
+    const recChunks = useRef<Blob[]>([]);
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const visionRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const tabSwRef = useRef(0);
+    const doneRef = useRef(false);
+
+
+    const addMsg = useCallback((m: Message) => {
+        setMessages(prev => {
+            if (prev.find(x => x.id === m.id)) return prev;
+            return [...prev, m];
+        });
+        if (m.role === 'ai') {
+            setQCount(q => q + 1);
+            const text = m.content.replace(/CODING_QUESTION:/gi, '').replace(/INTERVIEW_COMPLETE/gi, '').trim();
+            if (text) {
+                pendingAutoListen.current = true;
+                // Use ref so we always call the latest speak (avoids stale closure)
+                speakRef.current?.(text);
+            }
+            if (m.content.startsWith('CODING_QUESTION:')) setCodeOpen(true);
+            if (m.content.includes('INTERVIEW_COMPLETE')) setTimeout(endInterview, 1500);
+        }
+        if (m.role === 'candidate') setRCount(r => r + 1);
+    }, []);
+
+
+    // ── STT (Whisper) ─────────────────────────────────────────────────────────
+    const startListening = useCallback(() => {
+        console.log("startListening called. isListeningRef:", isListeningRef.current, "camStream:", !!camStream.current, "isTtsSpeaking:", isTtsSpeaking.current);
+
+        // Recover from Chrome TTS bug where onend never fires
+        if (isTtsSpeaking.current && !window.speechSynthesis?.speaking) {
+            console.warn("Recovering stuck TTS lock");
+            isTtsSpeaking.current = false;
+        }
+
+        if (isListeningRef.current || !camStream.current || isTtsSpeaking.current) {
+            console.log("startListening aborted early.");
+            if (isTtsSpeaking.current) setSttStatus('AI speaking...');
+            return;
+        }
+
+        // Guard: don't record if the mic is muted (disabled tracks produce silent audio)
+        const audioTracks = camStream.current.getAudioTracks();
+        if (!audioTracks.length || !audioTracks.some(t => t.enabled)) {
+            console.warn("startListening aborted: microphone is muted or has no audio tracks.");
+            setSttStatus('🔇 Mic muted');
+            return;
+        }
+
+        try {
+            console.log("Initializing MediaRecorder for STT...");
+            const audio = new MediaStream(audioTracks);
+            const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg', 'audio/mp4']
+                .find(m => MediaRecorder.isTypeSupported(m)) || '';
+            whisperRecorder.current = new MediaRecorder(audio, mime ? { mimeType: mime } : {});
+            whisperChunks.current = [];
+            whisperRecorder.current.ondataavailable = e => { if (e.data?.size) whisperChunks.current.push(e.data); };
+            whisperRecorder.current.onstop = async () => {
+                // Clear max-listen safety timer
+                if (maxListenTimerRef.current) { clearTimeout(maxListenTimerRef.current); maxListenTimerRef.current = null; }
+                console.log("whisperRecorder stopped.");
+                const chunks = whisperChunks.current.splice(0);
+                if (!chunks.length || doneRef.current) return;
+                const blob = new Blob(chunks, { type: mime || 'audio/webm' });
+                console.log("STT segment blob size:", blob.size);
+                if (blob.size < 200) {
+                    // Audio too short/silent — retry listening unless TTS is speaking
+                    if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current) {
+                        setTimeout(() => { if (!isTtsSpeaking.current) startListening(); }, 500);
+                    }
+                    return;
+                }
+                try {
+                    const fd = new FormData(); fd.append('audio', blob, 'stt.webm');
+                    const t = localStorage.getItem('token');
+                    console.log("Sending STT segment to backend...");
+                    const res = await fetch(`${API_BASE}/stt/transcribe`, {
+                        method: 'POST', headers: { Authorization: `Bearer ${t}` }, body: fd, credentials: 'include',
+                    });
+                    const d = await res.json().catch(() => ({}));
+                    console.log("STT response from backend:", d);
+                    if (d.text?.trim()) {
+                        // Use ref to always call the latest sendMessage (avoids stale closure)
+                        sendMessageRef.current?.(d.text.trim());
+                    } else {
+                        console.log("STT text empty — retrying listen.");
+                        if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current) {
+                            setTimeout(() => { if (!isTtsSpeaking.current) startListening(); }, 500);
+                        } else {
+                            pendingAutoListen.current = true;
+                        }
+                    }
+                } catch (err) {
+                    console.error("STT transcribing error:", err);
+                    pendingAutoListen.current = true;
+                }
+            };
+            whisperRecorder.current.start(250);
+            isListeningRef.current = true;
+            setIsListening(true);
+            setSttStatus('🎤 Listening…');
+            console.log("Listening interface activated!");
+
+            // Safety: stop listening after 30s max to avoid infinite silent recording
+            maxListenTimerRef.current = setTimeout(() => {
+                console.log("Max listen timeout (30s) reached. Stopping.");
+                if (isListeningRef.current) stopListening();
+            }, 30000);
+
+            // ── VAD (Silence detection) ──────────────────────────────────────────
+            try {
+                const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+                if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+                    audioCtxRef.current = new AudioContextClass();
+                }
+                const ctx = audioCtxRef.current;
+                if (ctx.state === 'suspended') {
+                    ctx.resume().catch(() => { });
+                }
+
+                const src = ctx.createMediaStreamSource(audio);
+                const an = ctx.createAnalyser();
+                an.fftSize = 512;
+                src.connect(an);
+
+                const dataArray = new Uint8Array(an.frequencyBinCount);
+                // Start lastSpeak from now so silence-after-no-speech also triggers cut-off
+                let lastSpeak = Date.now();
+                let speaking = false;
+                // If no speech at all within 8s, stop and retry
+                const silenceOnlyTimeout = setTimeout(() => {
+                    if (!speaking && isListeningRef.current) {
+                        console.log("VAD: No speech detected in 8s. Stopping and retrying.");
+                        stopListening();
+                    }
+                }, 8000);
+
+                const checkSpeech = () => {
+                    if (!isListeningRef.current) { clearTimeout(silenceOnlyTimeout); return; }
+                    an.getByteFrequencyData(dataArray);
+                    const avg = dataArray.reduce((acc, val) => acc + val, 0) / dataArray.length;
+
+                    if (avg > 15) { // threshold for human speech
+                        lastSpeak = Date.now();
+                        if (!speaking) { speaking = true; clearTimeout(silenceOnlyTimeout); }
+                    } else if (speaking && Date.now() - lastSpeak > 2000) {
+                        console.log("VAD detected 2s of silence after speech. Stopping listening.");
+                        speaking = false;
+                        stopListening();
+                        return;
+                    }
+                    vadRafRef.current = requestAnimationFrame(checkSpeech);
+                };
+                vadRafRef.current = requestAnimationFrame(checkSpeech);
+            } catch (e) {
+                console.error("VAD error", e);
+            }
+        } catch (e: unknown) { setSttStatus('Mic error'); console.error(e); }
+    }, []);
+
+    const stopListening = () => {
+        if (maxListenTimerRef.current) { clearTimeout(maxListenTimerRef.current); maxListenTimerRef.current = null; }
+        if (vadRafRef.current) cancelAnimationFrame(vadRafRef.current);
+        vadRafRef.current = null;
+        if (audioCtxRef.current) {
+            audioCtxRef.current.close().catch(() => { });
+            audioCtxRef.current = null;
+        }
+
+        if (whisperRecorder.current?.state !== 'inactive') {
+            try { whisperRecorder.current?.stop(); } catch { }
+        }
+        isListeningRef.current = false;
+        setIsListening(false);
+        setSttStatus('');
+    };
+
+    // ── TTS ───────────────────────────────────────────────────────────────────
+    // speak is defined AFTER startListening so the dep array is valid (no TDZ error)
+    const speak = useCallback((text: string) => {
+        console.log("TTS Triggered with text:", text);
+        const synth = window.speechSynthesis;
+        if (!synth) return;
+        ttsSeq.current += 1;
+        const seq = ttsSeq.current;
+        synth.cancel();
+        const clean = text.trim();
+        if (!clean || clean.length < 2) {
+            console.log("TTS text too short, proceeding to listen immediately.");
+            if (pendingAutoListen.current && voiceOnRef.current) {
+                pendingAutoListen.current = false;
+                startListening();
+            }
+            return;
+        }
+
+        const doSpeak = (voice: SpeechSynthesisVoice | null) => {
+            if (seq !== ttsSeq.current) return;
+            const utt = new SpeechSynthesisUtterance(clean);
+            utt.lang = 'en-IN'; utt.rate = 0.92; utt.pitch = 1.05;
+            if (voice) utt.voice = voice;
+            utt.onstart = () => {
+                console.log("TTS onstart fired");
+                if (seq !== ttsSeq.current) return;
+                isTtsSpeaking.current = true;
+                setSttStatus('AI speaking...');
+                const tile = document.getElementById('tile-ai');
+                if (tile) tile.style.borderColor = '#22c55e';
+            };
+            const done = () => {
+                console.log("TTS done/onerror fired");
+                if (seq !== ttsSeq.current) return;
+                isTtsSpeaking.current = false;
+                setSttStatus('');
+                const tile = document.getElementById('tile-ai');
+                if (tile) tile.style.borderColor = '#334155';
+                if (pendingAutoListen.current && voiceOnRef.current) {
+                    console.log("Auto-listening triggered from TTS done.");
+                    pendingAutoListen.current = false;
+                    startListening();
+                }
+            };
+            utt.onend = done; utt.onerror = done;
+            (window as any)._currUtt = utt; // Anti-GC hack for Chrome
+            console.log("TTS calling synth.speak");
+            synth.speak(utt);
+        };
+
+        const voices = synth.getVoices();
+        if (!voices.length) {
+            let fired = false;
+            const handler = () => {
+                if (fired) return;
+                fired = true;
+                console.log("Voices loaded lazily");
+                const v = synth.getVoices();
+                doSpeak(v.find(x => x.lang === 'en-IN') || v.find(x => x.lang.startsWith('en')) || null);
+            };
+            synth.addEventListener('voiceschanged', handler, { once: true });
+
+            // Failsafe for Safari/Chrome bug where voiceschanged never fires
+            setTimeout(() => {
+                if (!fired) {
+                    console.warn("voiceschanged timeout! Forcing doSpeak...");
+                    fired = true;
+                    synth.removeEventListener('voiceschanged', handler);
+                    doSpeak(null);
+                }
+            }, 600);
+        } else {
+            console.log("Voices already loaded");
+            doSpeak(voices.find(x => x.lang === 'en-IN') || voices.find(x => x.lang.startsWith('en')) || null);
+        }
+    }, [startListening]);
+
+    // Keep speakRef current so addMsg (empty-dep useCallback) always calls the latest speak
+    useEffect(() => { speakRef.current = speak; }, [speak]);
+
+    // ── Send message ──────────────────────────────────────────────────────────
+    const sendMessage = useCallback(async (text: string) => {
+        if (!text.trim() || doneRef.current || sending) return;
+        setSending(true);
+        try {
+            // Backend /chat now returns List[MessageOut] — always an array
+            const msgs = await apiCall<Message[]>('POST', `/interview-session/chat/${token}`, {
+                content: text.trim(),
+                code_snippet: codeOpen && codeInput.trim() ? codeInput.trim() : undefined,
+            });
+            setTextInput(''); setCodeInput('');
+            msgs.forEach(addMsg);
+            pendingAutoListen.current = true;
+        } catch (e) { console.error(e); }
+        finally { setSending(false); }
+    }, [token, codeOpen, codeInput, codeLang, addMsg, sending]);
+
+    // Keep ref pointing to the latest sendMessage so startListening (empty-dep) never closes over a stale version
+    useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
+
+    // ── End interview ─────────────────────────────────────────────────────────
+    const endInterview = useCallback(async () => {
+        if (doneRef.current) return;
+        doneRef.current = true;
+        stopListening();
+        window.speechSynthesis?.cancel();
+        if (timerRef.current) clearInterval(timerRef.current);
+        if (visionRef.current) clearInterval(visionRef.current);
+
+        try {
+            if (recorder.current) {
+                recorder.current.stop();
+                await new Promise(r => { recorder.current!.onstop = r as () => void; setTimeout(r, 2500); });
+                const blob = new Blob(recChunks.current, { type: 'video/webm' });
+                const fd = new FormData(); fd.append('file', blob, 'recording.webm');
+                const t = localStorage.getItem('token');
+                await fetch(`${API_BASE}/recordings/upload/${token}`, {
+                    method: 'POST', headers: { Authorization: `Bearer ${t}` }, body: fd, credentials: 'include',
+                });
+            }
+            const result = await apiCall<{
+                answer_score?: number; code_score?: number;
+                emotion_score?: number; integrity_score?: number; ai_feedback?: string;
+            }>('POST', `/interview-session/end/${token}`);
+
+            setCompletedData({
+                title: 'Interview Complete!',
+                sub: result?.ai_feedback ? 'Results have been calculated.' : 'Processing results...',
+                scores: result ? [
+                    { label: 'Q&A Score', val: result.answer_score ?? 0, color: '#4F46E5' },
+                    { label: 'Code Score', val: result.code_score ?? 0, color: '#10B981' },
+                    { label: 'Confidence', val: result.emotion_score ?? 0, color: '#F59E0B' },
+                    { label: 'Integrity', val: result.integrity_score ?? 0, color: '#EF4444' },
+                ] : [],
+            });
+        } catch {
+            setCompletedData({ title: 'Interview Complete!', sub: 'Processing results...', scores: [] });
+        }
+        setCompleted(true);
+    }, [token]);
+
+    // ── Begin interview ───────────────────────────────────────────────────────
+    const beginInterview = async () => {
+        setStartLoading(true);
+        window.speechSynthesis?.getVoices();
+        try {
+            // Start video recording
+            if (camStream.current) {
+                try {
+                    recorder.current = new MediaRecorder(camStream.current, { mimeType: 'video/webm;codecs=vp9,opus' });
+                    recorder.current.ondataavailable = e => { if (e.data.size) recChunks.current.push(e.data); };
+                    recorder.current.start(3000);
+                    setIsRecording(true);
+                } catch { }
+            }
+
+            const res = await apiCall<{ messages?: Message[]; ai_paused?: boolean }>(
+                'POST', `/interview-session/start/${token}`
+            );
+            setStarted(true);
+            setIsLive(true);
+
+            // Start timer
+            const limit = (session?.duration_minutes ?? 60) * 60;
+            timerRef.current = setInterval(() => {
+                setElapsed(prev => {
+                    const next = prev + 1;
+                    setIsCritical(limit - next < 300);
+                    if (next >= limit + 60) endInterview();
+                    return next;
+                });
+            }, 1000);
+
+            // Tab watch — silently track for backend integrity scoring
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    tabSwRef.current++;
+                    setTabSwitches(tabSwRef.current);
+                }
+            });
+
+            // Vision
+            visionRef.current = setInterval(async () => {
+                const vid = localVideoRef.current;
+                if (!vid?.videoWidth) return;
+                const cv = document.createElement('canvas'); cv.width = 160; cv.height = 120;
+                cv.getContext('2d')!.drawImage(vid, 0, 0, 160, 120);
+                const b64 = cv.toDataURL('image/jpeg', 0.6).split(',')[1];
+                try {
+                    const r = await apiCall<{
+                        face_count?: number; dominant_emotion?: string; gaze_ok?: boolean;
+                    }>('POST', '/vision/analyze', {
+                        frame: b64, interview_id: session?.id, tab_switch_count: tabSwRef.current,
+                    });
+                    const fc = r.face_count ?? 0;
+                    setFaceCount(fc || 1);
+                    if (fc === 0) {
+                        setLookAway(a => a + 1); setGaze('Away');
+                    } else setGaze('OK');
+                    if (fc > 1) setMultiFace(m => m + 1);
+                    if (r.dominant_emotion) setEmotion(r.dominant_emotion);
+                } catch { }
+            }, VISION_INTERVAL_MS);
+
+            if (res?.messages) res.messages.forEach(addMsg);
+            if (res?.ai_paused) setAiPaused(true);
+            // Delay fallback-listen by 4s to ensure TTS has had time to start.
+            // TTS itself (via pendingAutoListen + speak.done) will call startListening when it finishes.
+            // This fallback only fires if TTS never started (e.g. voice synthesis unavailable).
+            setTimeout(() => {
+                if (voiceOnRef.current && !isTtsSpeaking.current && !isListeningRef.current) {
+                    startListening();
+                }
+            }, 4000);
+        } catch (e: unknown) {
+            const msg = (e as Error).message || 'Could not start interview';
+            // If already completed, show a friendly message
+            if (msg.toLowerCase().includes('completed')) {
+                setStartError('This interview has already been completed. You cannot re-enter.');
+            } else {
+                setStartError(msg);
+            }
+        } finally { setStartLoading(false); }
+    };
+
+    // ── Boot ──────────────────────────────────────────────────────────────────
+    useEffect(() => {
+        if (!localStorage.getItem('token')) { window.location.href = '/'; return; }
+        apiCall<InterviewSession>('GET', `/interview-session/join/${token}`)
+            .then(data => {
+                setSession(data);
+
+                // If already completed — jump straight to the results overlay
+                if ((data.status as string) === 'COMPLETED') {
+                    setCompleted(true);
+                    setStarted(true); // render the room behind the overlay
+                    setCompletedData({
+                        title: 'Interview Complete!',
+                        sub: data.ai_feedback ? 'Your results are below.' : 'Results have been processed.',
+                        scores: [
+                            { label: 'Q&A Score', val: data.answer_score ?? 0, color: '#4F46E5' },
+                            { label: 'Code Score', val: data.code_score ?? 0, color: '#10B981' },
+                            { label: 'Confidence', val: data.emotion_score ?? 0, color: '#F59E0B' },
+                            { label: 'Integrity', val: data.integrity_score ?? 0, color: '#EF4444' },
+                        ],
+                    });
+                    return;
+                }
+
+                // Camera setup — attach to preview immediately, localVideo attached again after start
+                navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true })
+                    .then(s => {
+                        camStream.current = s;
+                        setLocalStream(s);                              // ← triggers WebRTC
+                        if (previewVideoRef.current) previewVideoRef.current.srcObject = s;
+                        setJwtToken(localStorage.getItem('token') || '');
+                    })
+                    .catch(() => { });
+            })
+            .catch(e => setLoadError(e.message));
+
+        return () => {
+            if (timerRef.current) clearInterval(timerRef.current);
+            if (visionRef.current) clearInterval(visionRef.current);
+        };
+    }, [token]);
+
+    // ── Re-attach camera stream when the interview room mounts ────────────────
+    // When started=true, VideoStage renders a new <video> element in the DOM.
+    // The boot useEffect ran before this element existed, so the stream was
+    // only attached to the preview. We re-attach it here after the room renders.
+    useEffect(() => {
+        if (!started) return;
+        // Use a small rAF delay to ensure the video element has mounted
+        const raf = requestAnimationFrame(() => {
+            if (localVideoRef.current && camStream.current) {
+                localVideoRef.current.srcObject = camStream.current;
+                localVideoRef.current.play().catch(() => { });
+            }
+        });
+        return () => cancelAnimationFrame(raf);
+    }, [started]);
+
+    // ── WebRTC: broadcast candidate camera to HR watchers ─────────────────────
+    // Activates after interview starts and camera permission is granted.
+    useWebRTC({
+        token,
+        jwtToken: started ? jwtToken : '',
+        localStream,
+        onRemoteStream: (p) => {
+            setRemoteStreams(prev => {
+                const others = prev.filter(s => s.participantId !== p.participantId);
+                return [...others, p];
+            });
+        },
+        onRemoteLeft: (pid) => setRemoteStreams(prev => prev.filter(s => s.participantId !== pid)),
+    });
+
+    const toggleMute = () => {
+        setMuted(m => { camStream.current?.getAudioTracks().forEach(t => t.enabled = m); return !m; });
+    };
+
+    const toggleCam = () => {
+        setCamOff(c => { camStream.current?.getVideoTracks().forEach(t => t.enabled = c); return !c; });
+    };
+
+    const toggleVoice = () => {
+        const next = !voiceOn; setVoiceOn(next); voiceOnRef.current = next;
+        if (!next && isListeningRef.current) stopListening();
+    };
+
+    const toggleListen = () => {
+        if (isListening) {
+            stopListening();
+        } else {
+            isTtsSpeaking.current = false;
+            window.speechSynthesis?.cancel();
+            startListening();
+        }
+    };
+
+    // ── Loading / Error ───────────────────────────────────────────────────────
+    if (!session && !loadError) {
+        return (
+            <div className="start-ov">
+                <div className="start-card" style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 48, marginBottom: 10 }}>🎯</div>
+                    <div style={{ fontSize: 17, fontWeight: 700 }}>Loading Interview...</div>
+                </div>
+            </div>
+        );
+    }
+
+    if (loadError) {
+        return (
+            <div className="start-ov">
+                <div className="start-card" style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 48, marginBottom: 10 }}>❌</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--danger)' }}>{loadError}</div>
+                    <a href="/" style={{ color: 'var(--primary)', fontSize: 13, marginTop: 12, display: 'block' }}>Return to Dashboard</a>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <>
+            {/* Pre-start overlay */}
+            {!started && (
+                <StartOverlay
+                    title={session!.title}
+                    jobRole={session!.job_role}
+                    durationMin={session!.duration_minutes}
+                    previewRef={previewVideoRef}
+                    loading={startLoading}
+                    error={startError}
+                    onStart={beginInterview}
+                />
+            )}
+
+            {/* Post-completion overlay */}
+            <CompleteOverlay
+                visible={completed}
+                title={completedData?.title}
+                subtitle={completedData?.sub}
+                scores={completedData?.scores}
+            />
+
+            {/* Interview Room */}
+            {started && (
+                <div className="room" id="mainRoom">
+                    {/* ── TOPBAR: spans all 3 columns (grid-column: 1/-1) ── */}
+                    <header className="topbar">
+                        <div className="tb-left">
+                            <div className={`status-dot${isLive ? ' live' : ''}`} />
+                            <div className="tb-title">{session!.title}</div>
+                            <span className="tb-role">{session!.job_role}</span>
+                        </div>
+                        <div className={`timer${isCritical ? ' critical' : ''}`}>
+                            {String(Math.floor(elapsed / 60)).padStart(2, '0')}:{String(elapsed % 60).padStart(2, '0')}
+                        </div>
+                        <div className="tb-right">
+                            {isRecording && (
+                                <span className="badge rec-badge">
+                                    <i className="fas fa-circle" /> REC
+                                </span>
+                            )}
+                            <button className="btn btn-outline btn-sm" onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
+                                <i className={`fas fa-microphone${muted ? '-slash' : ''}`} />
+                            </button>
+                            <button className="btn btn-outline btn-sm" onClick={toggleCam} title={camOff ? 'Enable Camera' : 'Disable Camera'}>
+                                <i className={`fas fa-video${camOff ? '-slash' : ''}`} />
+                            </button>
+                            <button className="btn btn-danger btn-sm" onClick={endInterview}>
+                                <i className="fas fa-phone-slash" /> End
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* ── ROW 2: video + chat ── */}
+
+                    {/* LEFT: Video stage */}
+                    <VideoStage
+                        localVideoRef={localVideoRef}
+                        camOff={camOff}
+                        remoteStreams={remoteStreams}
+                    />
+
+                    {/* RIGHT: Chat panel */}
+                    <ChatPanel
+                        messages={messages}
+                        aiPaused={aiPaused}
+                        voiceOn={voiceOn}
+                        isRecording={isListening}
+                        sttStatus={sttStatus}
+                        sending={sending}
+                        codeOpen={codeOpen}
+                        codeInput={codeInput}
+                        codeLang={codeLang}
+                        textInput={textInput}
+                        onToggleVoice={toggleVoice}
+                        onToggleCode={() => setCodeOpen(o => !o)}
+                        onToggleListen={toggleListen}
+                        onCodeChange={setCodeInput}
+                        onCodeLangChange={setCodeLang}
+                        onCodeClear={() => setCodeInput('')}
+                        onTextChange={setTextInput}
+                        onSend={() => sendMessage(textInput)}
+                    />
+                </div>
+            )}
+        </>
+    );
+}
