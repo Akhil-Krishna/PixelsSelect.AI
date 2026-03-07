@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change-me-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours
+    INTERVIEW_JOIN_EARLY_SECONDS: int = 0
+    INTERVIEW_JOIN_LATE_SECONDS: int = 600
 
     # ─── Database — PostgreSQL ─────────────────────────────────────────────────
     # asyncpg driver is required:  postgresql+asyncpg://user:pass@host:port/db
@@ -111,6 +113,8 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     RECORDINGS_DIR: str = "recordings"
     UPLOADS_DIR: str = "uploads"
+    CANDIDATE_CAN_DOWNLOAD_RECORDINGS: bool = False
+    INTERVIEW_LINK_REMINDER_MINUTES: int = 5
 
     # ─── Feature flags ────────────────────────────────────────────────────────
     AI_LOCAL_FASTPATH_ENABLED: bool = True
@@ -142,6 +146,7 @@ class Settings(BaseSettings):
         "DB_POOL_PRE_PING",
         "SEED_DEMO_DATA",
         "LOCAL_MODEL_SERVER_ENABLED",
+        "CANDIDATE_CAN_DOWNLOAD_RECORDINGS",
         mode="before",
     )
     @classmethod

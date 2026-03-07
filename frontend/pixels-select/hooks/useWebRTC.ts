@@ -72,7 +72,7 @@ export function useWebRTC({
         if (!jwtToken || !token) return;
 
         const wsUrl = `${WS_BASE}/api/v1/ws/rtc/${token}?token=${encodeURIComponent(jwtToken)}`;
-        console.log('[WebRTC] connecting →', wsUrl);
+        console.log('[WebRTC] connecting');
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 

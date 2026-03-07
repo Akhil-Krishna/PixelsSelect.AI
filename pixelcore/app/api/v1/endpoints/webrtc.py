@@ -23,8 +23,9 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.security import decode_token
-from app.models.interview import Interview, InterviewInterviewer
+from app.models.interview import Interview, InterviewInterviewer, InterviewStatus
 from app.models.user import User, UserRole
+from app.services.access_policy import AccessPolicy
 from app.services.room_manager import RoomManager
 
 logger = logging.getLogger(__name__)
@@ -174,6 +175,10 @@ async def rtc_signaling(
     if not server_role:
         await websocket.close(code=4003, reason="Not authorised for this room")
         return
+    if interview.status == InterviewStatus.SCHEDULED and server_role == "candidate":
+        if not AccessPolicy.candidate_join_window_ok(interview):
+            await websocket.close(code=4003, reason="Outside allowed interview join window")
+            return
 
     await websocket.accept()
 

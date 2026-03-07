@@ -1,14 +1,12 @@
 """
-Email service — multi-provider, with a deferred link delivery thread.
+Email service — multi-provider candidate/interviewer notifications.
 
 Providers:
   log      — print-only, no actual send (dev default)
   sendgrid — SendGrid API
 """
 import logging
-import threading
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.core.config import settings
@@ -138,19 +136,16 @@ class EmailService:
         candidate_name: str,
         interview_title: str,
         scheduled_at: "datetime | str",
-        interview_link: str,
         temp_password: Optional[str] = None,
     ) -> bool:
         """
-        Two-step candidate notification:
-        1. Send schedule details immediately (without link).
-        2. Send the interview link 5 min before the scheduled time.
+        Immediate schedule notification (without join link).
+        Reminder link delivery is scheduled separately via a task queue.
         """
         schedule_dt = _parse_datetime(scheduled_at)
         label = _fmt_utc(schedule_dt)
 
-        # Immediate: credentials + schedule
-        ok = self.send_sync(
+        return self.send_sync(
             to=candidate_email,
             subject=f"Interview Scheduled: {interview_title}",
             html_body=self._build_candidate_schedule_html(
@@ -162,26 +157,26 @@ class EmailService:
             ),
         )
 
-        # Deferred: link email at ETA (scheduled_at - 5 min)
-        eta = schedule_dt - timedelta(minutes=5)
-        delay = max(0.0, (eta - datetime.now(timezone.utc)).total_seconds())
-
-        def _send_link():
-            if delay > 0:
-                time.sleep(delay)
-            self.send_sync(
-                to=candidate_email,
-                subject=f"Interview Link: {interview_title}",
-                html_body=self._build_candidate_link_html(
-                    candidate_name=candidate_name,
-                    interview_title=interview_title,
-                    scheduled_label=label,
-                    interview_link=interview_link,
-                ),
-            )
-
-        threading.Thread(target=_send_link, daemon=True).start()
-        return ok
+    def send_interview_link_sync(
+        self,
+        candidate_email: str,
+        candidate_name: str,
+        interview_title: str,
+        scheduled_at: "datetime | str",
+        interview_link: str,
+    ) -> bool:
+        schedule_dt = _parse_datetime(scheduled_at)
+        label = _fmt_utc(schedule_dt)
+        return self.send_sync(
+            to=candidate_email,
+            subject=f"Interview Link: {interview_title}",
+            html_body=self._build_candidate_link_html(
+                candidate_name=candidate_name,
+                interview_title=interview_title,
+                scheduled_label=label,
+                interview_link=interview_link,
+            ),
+        )
 
     def send_interviewer_notification_sync(
         self,
@@ -213,4 +208,5 @@ class EmailService:
 # Singleton + module-level aliases
 email_service = EmailService()
 send_interview_invite_sync = email_service.send_interview_invite_sync
+send_interview_link_sync = email_service.send_interview_link_sync
 send_interviewer_notification_sync = email_service.send_interviewer_notification_sync

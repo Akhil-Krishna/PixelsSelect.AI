@@ -45,12 +45,17 @@ export async function uploadFile(path: string, file: File, fieldName = 'file'): 
     const token = getToken();
     const fd = new FormData();
     fd.append(fieldName, file);
-    await fetch(API_BASE + path, {
+    const res = await fetch(API_BASE + path, {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
         body: fd,
     });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const errorMessage = data?.error?.message || data?.detail || `Error ${res.status}`;
+        throw new Error(errorMessage);
+    }
 }
 
 export function formatDate(d: string | null | undefined): string {

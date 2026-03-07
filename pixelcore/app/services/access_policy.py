@@ -5,9 +5,11 @@ Using a class with static methods groups all authz decisions
 in one place, making it easy to audit and extend.
 """
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
+from app.core.config import settings
 from app.models.interview import Interview
 from app.models.user import User, UserRole
 
@@ -62,6 +64,24 @@ class AccessPolicy:
     # ── Candidate ownership ────────────────────────────────────────────────────
 
     @staticmethod
+    def candidate_join_window_ok(iv: Interview, now: datetime | None = None) -> bool:
+        """
+        Enforce candidate join window relative to scheduled_at.
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+
+        scheduled = iv.scheduled_at
+        if scheduled.tzinfo is None:
+            scheduled = scheduled.replace(tzinfo=timezone.utc)
+        else:
+            scheduled = scheduled.astimezone(timezone.utc)
+
+        earliest = scheduled - timedelta(seconds=max(0, int(settings.INTERVIEW_JOIN_EARLY_SECONDS)))
+        latest = scheduled + timedelta(seconds=max(0, int(settings.INTERVIEW_JOIN_LATE_SECONDS)))
+        return earliest <= now <= latest
+
+    @staticmethod
     def ensure_candidate_owner(
         iv: Interview, user: User, message: str = "Access denied"
     ) -> None:
@@ -77,6 +97,19 @@ class AccessPolicy:
             },
         )
         raise HTTPException(status_code=403, detail=message)
+
+    @staticmethod
+    def ensure_candidate_join_window(iv: Interview, user: User) -> None:
+        """
+        Raise 403 if the candidate attempts to join outside the allowed window.
+        Admin bypasses this check.
+        """
+        if user.role == UserRole.ADMIN:
+            return
+        if user.role == UserRole.CANDIDATE and iv.candidate_id == user.id:
+            if AccessPolicy.candidate_join_window_ok(iv):
+                return
+            raise HTTPException(status_code=403, detail="Interview can only be joined in the allowed time window")
 
     # ── HR / interview creator access ─────────────────────────────────────────
 

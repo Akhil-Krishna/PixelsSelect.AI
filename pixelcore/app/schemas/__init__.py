@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from app.models.user import UserRole
 from app.models.interview import InterviewStatus
@@ -79,7 +79,7 @@ class InterviewCreate(BaseModel):
     job_role: str
     description: Optional[str] = None
     candidate_email: EmailStr
-    interviewer_ids: List[str] = []
+    interviewer_ids: List[str] = Field(default_factory=list)
     scheduled_at: datetime
     duration_minutes: int = 60
     enable_emotion_analysis: bool = True
@@ -132,7 +132,7 @@ class InterviewerOut(BaseModel):
 
 
 class InterviewWithInterviewers(InterviewOut):
-    interviewers: List[InterviewerOut] = []
+    interviewers: List[InterviewerOut] = Field(default_factory=list)
     temp_password: Optional[str] = None  # Only set when a new candidate is auto-created
 
     model_config = {"from_attributes": True}
@@ -144,8 +144,8 @@ class FrameEmotionData(BaseModel):
     avg_confidence: float = 65.0
     avg_engagement: float = 65.0
     avg_stress: float = 20.0
-    dominant_emotions: List[str] = []
-    cheating_flags: List[str] = []
+    dominant_emotions: List[str] = Field(default_factory=list)
+    cheating_flags: List[str] = Field(default_factory=list)
     frames_analyzed: int = 0
     max_cheating_score: float = 0.0
     avg_cheating_score: float = 0.0
@@ -180,7 +180,7 @@ class ScoreBreakdown(BaseModel):
     integrity_score: Optional[float] = None
     overall_score: float
     passed: bool
-    weights_used: dict = {}
+    weights_used: dict = Field(default_factory=dict)
 
 
 class EvaluationResult(BaseModel):
@@ -190,12 +190,12 @@ class EvaluationResult(BaseModel):
     emotion_score: Optional[float] = None
     integrity_score: Optional[float] = None
     passed: bool
-    strengths: List[str] = []
-    weaknesses: List[str] = []
+    strengths: List[str] = Field(default_factory=list)
+    weaknesses: List[str] = Field(default_factory=list)
     ai_feedback: str
     cheating_score: Optional[float] = None
     score_breakdown: Optional[ScoreBreakdown] = None
-    cheating_flags: List[str] = []
+    cheating_flags: List[str] = Field(default_factory=list)
 
 
 # ─── Message ──────────────────────────────────────────────────────────────────

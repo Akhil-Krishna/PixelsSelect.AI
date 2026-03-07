@@ -203,6 +203,7 @@ export default function WatchPage() {
             if (pollRef.current) clearInterval(pollRef.current);
             if (metricsRef.current) clearInterval(metricsRef.current);
             if (timerRef.current) clearInterval(timerRef.current);
+            roomStream.current?.getTracks().forEach(t => t.stop());
         };
     }, [token]);
 
@@ -221,11 +222,46 @@ export default function WatchPage() {
     });
 
     // ── Actions ───────────────────────────────────────────────────────────────
+    const startRoomCamera = async () => {
+        const videoOnly = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        const track = videoOnly.getVideoTracks()[0];
+        if (!track) return;
+        if (!roomStream.current) {
+            roomStream.current = new MediaStream();
+        }
+        roomStream.current.addTrack(track);
+        setRoomStreamState(new MediaStream(roomStream.current.getTracks()));
+        if (localVideoRef.current) {
+            localVideoRef.current.srcObject = roomStream.current;
+            localVideoRef.current.play().catch(() => { });
+        }
+    };
+
+    const stopRoomCamera = () => {
+        const stream = roomStream.current;
+        if (!stream) return;
+        stream.getVideoTracks().forEach(track => {
+            track.stop();
+            stream.removeTrack(track);
+        });
+    };
+
     const toggleMute = () => {
         setRoomMuted(m => { roomStream.current?.getAudioTracks().forEach(t => t.enabled = m); return !m; });
     };
-    const toggleCam = () => {
-        setRoomCamOff(c => { roomStream.current?.getVideoTracks().forEach(t => t.enabled = c); return !c; });
+    const toggleCam = async () => {
+        if (roomCamOff) {
+            try {
+                await startRoomCamera();
+                setRoomCamOff(false);
+            } catch {
+                addFlag('Could not re-enable camera', 'warn', 'fa-video');
+            }
+            return;
+        }
+        stopRoomCamera();
+        setRoomCamOff(true);
+        setRoomStreamState(roomStream.current ? new MediaStream(roomStream.current.getTracks()) : null);
     };
     const leaveRoom = () => { roomStream.current?.getTracks().forEach(t => t.stop()); window.location.href = '/'; };
 

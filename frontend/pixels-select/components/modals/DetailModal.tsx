@@ -8,6 +8,7 @@ import { formatDate } from '../../lib/api';
 
 interface DetailModalProps {
     interview: Interview | null;
+    currentUserRole: 'admin' | 'hr' | 'interviewer' | 'candidate';
     onClose: () => void;
 }
 
@@ -18,7 +19,7 @@ const SCORE_SECTIONS = [
     { key: 'integrity_score', label: 'Integrity', color: '#EF4444' },
 ] as const;
 
-export function DetailModal({ interview: iv, onClose }: DetailModalProps) {
+export function DetailModal({ interview: iv, currentUserRole, onClose }: DetailModalProps) {
     if (!iv) return null;
 
     const pass = (iv.overall_score ?? 0) >= 60;
@@ -85,7 +86,7 @@ export function DetailModal({ interview: iv, onClose }: DetailModalProps) {
                         </div>
                     )}
 
-                    {iv.has_recording && (
+                    {iv.has_recording && currentUserRole !== 'candidate' && (
                         <Button as="a" href={`/api/v1/recordings/download/${iv.access_token}`} target="_blank" variant="outline" size="sm" icon="fa-video">
                             View Recording
                         </Button>

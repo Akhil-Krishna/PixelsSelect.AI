@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.core.deps import get_current_user, require_admin
+from app.core.deps import get_current_user, require_admin, require_hr
 from app.core.security import get_password_hash
 from app.models.user import Organisation, User, UserRole
 from app.schemas import OrgCreate, OrgOut, UserCreate, UserOut, UserUpdate
@@ -26,7 +26,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
 @router.get("/interviewers", response_model=List[UserOut])
 async def list_interviewers(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_hr),
 ):
     """List active interviewers. HR sees only their own org."""
     query = (

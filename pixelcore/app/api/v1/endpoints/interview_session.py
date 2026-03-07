@@ -57,6 +57,8 @@ async def join_interview(
 ):
     iv = await _get_iv(interview_token, db)
     AccessPolicy.ensure_interview_viewer(iv, current_user)
+    if iv.status == InterviewStatus.SCHEDULED:
+        AccessPolicy.ensure_candidate_join_window(iv, current_user)
     if iv.status == InterviewStatus.CANCELLED:
         raise HTTPException(400, "Interview cancelled")
     return iv  # type: ignore[return-value]
@@ -70,6 +72,8 @@ async def start_interview(
 ):
     iv = await _get_iv(interview_token, db)
     AccessPolicy.ensure_candidate_owner(iv, current_user)
+    if iv.status == InterviewStatus.SCHEDULED:
+        AccessPolicy.ensure_candidate_join_window(iv, current_user)
 
     if iv.status == InterviewStatus.COMPLETED:
         raise HTTPException(400, "Interview already completed")
@@ -236,6 +240,21 @@ async def _run_complete(
     )
 
 
+@router.get("/status/{interview_token}")
+async def get_interview_status(
+    interview_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    iv = await _get_iv(interview_token, db)
+    AccessPolicy.ensure_interview_viewer(iv, current_user)
+    return {
+        "status": iv.status.value,
+        "ai_paused": bool(iv.ai_paused),
+        "started_at": iv.started_at,
+    }
+
+
 @router.get("/messages/{interview_token}", response_model=List[MessageOut])
 async def get_messages(
     interview_token: str,
@@ -291,15 +310,29 @@ async def get_live_metrics(
     strs = [l.stress_score for l in recent if l.stress_score is not None]
     cheats = [l.cheating_score for l in recent if l.cheating_score is not None]
 
-    look_away = sum(1 for l in all_logs if (l.face_count or 1) == 0)
-    multi_face = sum(1 for l in all_logs if (l.face_count or 1) > 1)
+    def _flags_from_log(log: VisionLog) -> list[str]:
+        if isinstance(log.cheating_flags, list):
+            return [str(f) for f in log.cheating_flags]
+        if isinstance(log.cheating_flags, dict):
+            raw = log.cheating_flags.get("flags", [])
+            return [str(f) for f in raw] if isinstance(raw, list) else []
+        return []
 
-    all_flags: list = []
+    all_flags: list[str] = []
+    look_away = 0
+    multi_face = 0
+    max_tab_switches = 0
+    latest_flags = _flags_from_log(latest)
+
     for l in all_logs:
-        if isinstance(l.cheating_flags, list):
-            all_flags.extend(l.cheating_flags)
-        elif isinstance(l.cheating_flags, dict):
-            all_flags.extend(l.cheating_flags.get("flags", []))
+        flags = _flags_from_log(l)
+        all_flags.extend(flags)
+        max_tab_switches = max(max_tab_switches, int(l.tab_switch_count or 0))
+
+        if (l.face_count or 1) > 1 or any(f.startswith("multiple_faces_") for f in flags):
+            multi_face += 1
+        if (l.face_count or 1) == 0 or "no_face_detected" in flags or "gaze_away" in flags:
+            look_away += 1
 
     return {
         "frames_analyzed": len(all_logs),
@@ -310,10 +343,10 @@ async def get_live_metrics(
         "face_count": latest.face_count,
         "cheating_score": round(max(cheats), 1) if cheats else 0.0,
         "cheating_flags": list(set(all_flags))[-5:],
-        "tab_switches": latest.tab_switch_count or 0,
+        "tab_switches": max_tab_switches,
         "look_away_count": look_away,
         "multi_face_count": multi_face,
-        "gaze_ok": (latest.face_count or 1) > 0,
+        "gaze_ok": ((latest.face_count or 1) > 0) and ("gaze_away" not in latest_flags),
         "ai_paused": iv.ai_paused,
         "status": iv.status.value,
     }

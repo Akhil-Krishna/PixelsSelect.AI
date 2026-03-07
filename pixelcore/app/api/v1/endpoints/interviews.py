@@ -2,7 +2,9 @@
 Interview lifecycle endpoints — schedule, list, get, cancel, upload resume.
 """
 import base64
+import logging
 import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -20,13 +22,22 @@ from app.models.interview import Interview, InterviewInterviewer, InterviewStatu
 from app.models.user import User, UserRole
 from app.schemas import InterviewCreate, InterviewWithInterviewers
 from app.services.access_policy import AccessPolicy
-from app.services.email_service import send_interview_invite_sync, send_interviewer_notification_sync
+from app.services.email_service import (
+    send_interview_invite_sync,
+    send_interview_link_sync,
+    send_interviewer_notification_sync,
+)
 from app.services.idempotency_service import check_idempotency, store_idempotency_response
 from app.services.resume_service import extract_resume_text
-from app.tasks.email_tasks import send_interview_invite_task, send_interviewer_notification_task
+from app.tasks.email_tasks import (
+    send_interview_invite_task,
+    send_interview_link_task,
+    send_interviewer_notification_task,
+)
 from app.tasks.resume_tasks import extract_resume_text_task
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
+logger = logging.getLogger(__name__)
 
 
 def _eager_opts():
@@ -149,7 +160,6 @@ async def schedule_interview(
         "candidate_name": candidate.full_name,
         "interview_title": interview.title,
         "scheduled_at": interview.scheduled_at.isoformat(),
-        "interview_link": interview_link,
         "temp_password": temp_password,
     }
     background_tasks.add_task(
@@ -158,6 +168,45 @@ async def schedule_interview(
         invite_payload,
         lambda p=invite_payload: send_interview_invite_sync(**p),
     )
+
+    link_payload = {
+        "candidate_email": candidate.email,
+        "candidate_name": candidate.full_name,
+        "interview_title": interview.title,
+        "scheduled_at": interview.scheduled_at.isoformat(),
+        "interview_link": interview_link,
+    }
+    reminder_dt = interview.scheduled_at
+    if reminder_dt.tzinfo is None:
+        reminder_dt = reminder_dt.replace(tzinfo=timezone.utc)
+    else:
+        reminder_dt = reminder_dt.astimezone(timezone.utc)
+    reminder_eta = reminder_dt - timedelta(minutes=max(0, int(settings.INTERVIEW_LINK_REMINDER_MINUTES)))
+
+    if settings.CELERY_ENABLED and settings.CELERY_BACKGROUND_ENABLED:
+        try:
+            send_interview_link_task.apply_async(kwargs={"payload": link_payload}, eta=reminder_eta)
+        except Exception as exc:
+            logger.warning("Could not schedule reminder email via Celery: %s", exc)
+            background_tasks.add_task(
+                enqueue_task_with_fallback,
+                send_interview_link_task,
+                link_payload,
+                lambda p=link_payload: send_interview_link_sync(**p),
+            )
+    else:
+        now = datetime.now(timezone.utc)
+        if reminder_eta <= now:
+            background_tasks.add_task(
+                enqueue_task_with_fallback,
+                send_interview_link_task,
+                link_payload,
+                lambda p=link_payload: send_interview_link_sync(**p),
+            )
+        else:
+            logger.warning(
+                "Skipping delayed interview-link reminder because Celery background scheduling is disabled"
+            )
 
     loaded = await _load_interview(interview.id, db)
     result_schema = _to_schema(loaded, temp_password)
@@ -188,7 +237,7 @@ async def list_interviews(
     else:
         raise HTTPException(403, "Access denied")
 
-    query = query.options(*_eager_opts()).order_by(Interview.scheduled_at.desc())
+    query = query.options(*_eager_opts()).order_by(Interview.scheduled_at.asc())
     result = await db.execute(query)
     return [_to_schema(iv) for iv in result.scalars().unique().all()]
 

@@ -28,6 +28,7 @@ _counter_lock = asyncio.Lock()
 class FrameRequest(BaseModel):
     frame: str
     interview_id: Optional[str] = None
+    interview_token: Optional[str] = None
     tab_switch_count: int = 0
     frame_seq: Optional[int] = None
 
@@ -69,24 +70,33 @@ async def analyze_vision_frame(
             "dominant_emotion": "neutral", "face_count": 1, "degraded": True,
         }
 
-    if payload.interview_id and await _should_persist(payload.interview_id, payload.frame_seq):
+    interview_for_log: Optional[Interview] = None
+    if payload.interview_id:
         iv_res = await db.execute(select(Interview).where(Interview.id == payload.interview_id))
-        iv = iv_res.scalar_one_or_none()
-        if iv and iv.candidate_id == current_user.id:
-            db.add(VisionLog(
-                interview_id=iv.id,
-                dominant_emotion=result.get("dominant_emotion"),
-                confidence_score=result.get("confidence_score"),
-                engagement_score=result.get("engagement_score"),
-                stress_score=result.get("stress_score"),
-                emotions_raw=result.get("emotions"),
-                face_count=result.get("face_count", 1),
-                gaze_deviation=result.get("gaze_deviation"),
-                cheating_flags=result.get("cheating_flags"),
-                cheating_score=result.get("cheating_score", 0.0),
-                tab_switch_count=payload.tab_switch_count,
-            ))
-            await db.flush()
+        interview_for_log = iv_res.scalar_one_or_none()
+    elif payload.interview_token:
+        iv_res = await db.execute(select(Interview).where(Interview.access_token == payload.interview_token))
+        interview_for_log = iv_res.scalar_one_or_none()
+
+    if (
+        interview_for_log
+        and interview_for_log.candidate_id == current_user.id
+        and await _should_persist(interview_for_log.id, payload.frame_seq)
+    ):
+        db.add(VisionLog(
+            interview_id=interview_for_log.id,
+            dominant_emotion=result.get("dominant_emotion"),
+            confidence_score=result.get("confidence_score"),
+            engagement_score=result.get("engagement_score"),
+            stress_score=result.get("stress_score"),
+            emotions_raw=result.get("emotions"),
+            face_count=result.get("face_count", 1),
+            gaze_deviation=result.get("gaze_deviation"),
+            cheating_flags=result.get("cheating_flags"),
+            cheating_score=result.get("cheating_score", 0.0),
+            tab_switch_count=payload.tab_switch_count,
+        ))
+        await db.flush()
 
     return result
 

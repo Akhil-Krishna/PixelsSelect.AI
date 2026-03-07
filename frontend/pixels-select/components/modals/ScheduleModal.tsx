@@ -31,7 +31,7 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
 
     // Question Bank
     const [questions, setQuestions] = useState('');
-    const [qbLabel, setQbLabel] = useState('Click to upload PDF or TXT question bank');
+    const [qbLabel, setQbLabel] = useState('Click to upload TXT question bank');
 
     // Resume & Team
     const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -63,6 +63,22 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
         setSelectedIvs(prev =>
             prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
         );
+    };
+
+    const handleQuestionBankFile = async (file: File) => {
+        const lower = file.name.toLowerCase();
+        if (!lower.endsWith('.txt')) {
+            setError('Question bank upload supports TXT files only. Use one question per line.');
+            return;
+        }
+        try {
+            const content = await file.text();
+            setQuestions(content);
+            setQbLabel(`✓ ${file.name}`);
+            setError('');
+        } catch {
+            setError('Could not read question bank file');
+        }
     };
 
     const handleSubmit = async () => {
@@ -160,14 +176,22 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
                         AI will use these questions in order. Leave empty to let AI generate based on the job role.
                     </Alert>
                     <div className="form-group" style={{ marginTop: 12 }}>
-                        <label className="form-label">Upload Question Bank <span className="optional">(PDF or TXT — one question per line)</span></label>
+                        <label className="form-label">Upload Question Bank <span className="optional">(TXT — one question per line)</span></label>
                         <div className="file-drop" onClick={() => document.getElementById('qbFile')?.click()}>
-                            <i className="fas fa-file-pdf" style={{ fontSize: 28, color: '#EF4444' }} />
+                            <i className="fas fa-file-lines" style={{ fontSize: 28, color: '#4F46E5' }} />
                             <div style={{ fontSize: 13 }}>{qbLabel}</div>
                             <p className="form-hint" style={{ marginTop: 6 }}>Each line becomes a question. Prefix with CODING: for coding questions.</p>
                         </div>
-                        <input type="file" id="qbFile" style={{ display: 'none' }} accept=".pdf,.txt"
-                            onChange={e => { const f = e.target.files?.[0]; if (f) setQbLabel(`✓ ${f.name}`); }} />
+                        <input
+                            type="file"
+                            id="qbFile"
+                            style={{ display: 'none' }}
+                            accept=".txt"
+                            onChange={e => {
+                                const f = e.target.files?.[0];
+                                if (f) void handleQuestionBankFile(f);
+                            }}
+                        />
                     </div>
                     <div className="form-group">
                         <label className="form-label">Or type questions manually <span className="optional">(one per line)</span></label>

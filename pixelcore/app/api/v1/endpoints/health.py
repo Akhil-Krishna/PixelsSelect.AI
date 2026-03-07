@@ -17,6 +17,7 @@ _REQUIRED_TASKS = {
     "app.tasks.vision_tasks.analyze_vision_frame_task",
     "app.tasks.stt_tasks.transcribe_audio_task",
     "app.tasks.email_tasks.send_interview_invite_task",
+    "app.tasks.email_tasks.send_interview_link_task",
     "app.tasks.email_tasks.send_interviewer_notification_task",
     "app.tasks.resume_tasks.extract_resume_text_task",
     "app.tasks.recording_tasks.process_recording_metadata_task",

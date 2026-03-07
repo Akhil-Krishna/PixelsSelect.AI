@@ -90,7 +90,18 @@ export default function InterviewPage() {
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const visionRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const tabSwRef = useRef(0);
+    const frameSeqRef = useRef(0);
+    const lastTabSwitchMsRef = useRef(0);
     const doneRef = useRef(false);
+
+    const incrementTabSwitch = useCallback(() => {
+        const now = Date.now();
+        // Avoid duplicate increments when blur + visibilitychange fire together.
+        if (now - lastTabSwitchMsRef.current < 700) return;
+        lastTabSwitchMsRef.current = now;
+        tabSwRef.current += 1;
+        setTabSwitches(tabSwRef.current);
+    }, []);
 
 
     const addMsg = useCallback((m: Message) => {
@@ -407,6 +418,37 @@ export default function InterviewPage() {
         setCompleted(true);
     }, [token]);
 
+    const stopLocalCamera = useCallback(() => {
+        const stream = camStream.current;
+        if (!stream) return;
+        const videoTracks = stream.getVideoTracks();
+        videoTracks.forEach(track => {
+            track.stop();
+            stream.removeTrack(track);
+        });
+    }, []);
+
+    const startLocalCamera = useCallback(async () => {
+        const videoOnly = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+        const videoTrack = videoOnly.getVideoTracks()[0];
+        if (!videoTrack) return;
+
+        if (!camStream.current) {
+            camStream.current = new MediaStream();
+        }
+        camStream.current.addTrack(videoTrack);
+        setLocalStream(new MediaStream(camStream.current.getTracks()));
+
+        if (previewVideoRef.current) {
+            previewVideoRef.current.srcObject = camStream.current;
+            previewVideoRef.current.play().catch(() => { });
+        }
+        if (localVideoRef.current) {
+            localVideoRef.current.srcObject = camStream.current;
+            localVideoRef.current.play().catch(() => { });
+        }
+    }, []);
+
     // ── Begin interview ───────────────────────────────────────────────────────
     const beginInterview = async () => {
         setStartLoading(true);
@@ -439,14 +481,6 @@ export default function InterviewPage() {
                 });
             }, 1000);
 
-            // Tab watch — silently track for backend integrity scoring
-            document.addEventListener('visibilitychange', () => {
-                if (document.hidden) {
-                    tabSwRef.current++;
-                    setTabSwitches(tabSwRef.current);
-                }
-            });
-
             // Vision
             visionRef.current = setInterval(async () => {
                 const vid = localVideoRef.current;
@@ -455,10 +489,15 @@ export default function InterviewPage() {
                 cv.getContext('2d')!.drawImage(vid, 0, 0, 160, 120);
                 const b64 = cv.toDataURL('image/jpeg', 0.6).split(',')[1];
                 try {
+                    frameSeqRef.current += 1;
                     const r = await apiCall<{
                         face_count?: number; dominant_emotion?: string; gaze_ok?: boolean;
                     }>('POST', '/vision/analyze', {
-                        frame: b64, interview_id: session?.id, tab_switch_count: tabSwRef.current,
+                        frame: b64,
+                        interview_id: session?.id,
+                        interview_token: token,
+                        tab_switch_count: tabSwRef.current,
+                        frame_seq: frameSeqRef.current,
                     });
                     const fc = r.face_count ?? 0;
                     setFaceCount(fc || 1);
@@ -499,7 +538,7 @@ export default function InterviewPage() {
                 setSession(data);
 
                 // If already completed — jump straight to the results overlay
-                if ((data.status as string) === 'COMPLETED') {
+                if ((data.status as string).toLowerCase() === 'completed') {
                     setCompleted(true);
                     setStarted(true); // render the room behind the overlay
                     setCompletedData({
@@ -530,8 +569,29 @@ export default function InterviewPage() {
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
             if (visionRef.current) clearInterval(visionRef.current);
+            camStream.current?.getTracks().forEach(t => t.stop());
         };
     }, [token]);
+
+    // ── Focus/visibility tracking: tab switches + window/app switches ─────────
+    useEffect(() => {
+        if (!started || completed) return;
+
+        const onVisibilityChange = () => {
+            if (document.hidden) incrementTabSwitch();
+        };
+        const onWindowBlur = () => {
+            incrementTabSwitch();
+        };
+
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        window.addEventListener('blur', onWindowBlur);
+
+        return () => {
+            document.removeEventListener('visibilitychange', onVisibilityChange);
+            window.removeEventListener('blur', onWindowBlur);
+        };
+    }, [started, completed, incrementTabSwitch]);
 
     // ── Re-attach camera stream when the interview room mounts ────────────────
     // When started=true, VideoStage renders a new <video> element in the DOM.
@@ -568,8 +628,19 @@ export default function InterviewPage() {
         setMuted(m => { camStream.current?.getAudioTracks().forEach(t => t.enabled = m); return !m; });
     };
 
-    const toggleCam = () => {
-        setCamOff(c => { camStream.current?.getVideoTracks().forEach(t => t.enabled = c); return !c; });
+    const toggleCam = async () => {
+        if (camOff) {
+            try {
+                await startLocalCamera();
+                setCamOff(false);
+            } catch {
+                setStartError('Could not re-enable camera');
+            }
+            return;
+        }
+        stopLocalCamera();
+        setCamOff(true);
+        setLocalStream(camStream.current ? new MediaStream(camStream.current.getTracks()) : null);
     };
 
     const toggleVoice = () => {

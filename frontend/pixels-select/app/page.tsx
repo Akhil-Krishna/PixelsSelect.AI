@@ -332,7 +332,11 @@ export default function HomePage() {
         onSuccess={() => { toast('User created successfully'); }}
       />
 
-      <DetailModal interview={detailIv} onClose={() => setDetailIv(null)} />
+      <DetailModal
+        interview={detailIv}
+        currentUserRole={currentUser.role}
+        onClose={() => setDetailIv(null)}
+      />
 
       {tempCreds && (
         <TempPasswordModal

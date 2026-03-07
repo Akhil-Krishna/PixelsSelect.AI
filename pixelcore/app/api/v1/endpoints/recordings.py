@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.task_runner import enqueue_task_with_fallback
 from app.models.interview import Interview, InterviewInterviewer
@@ -108,7 +109,12 @@ async def download_recording(
     current_user: User = Depends(get_current_user),
 ):
     iv = await _get_interview(interview_token, db)
-    AccessPolicy.ensure_interview_viewer(iv, current_user)
+    if current_user.role == UserRole.CANDIDATE:
+        AccessPolicy.ensure_candidate_owner(iv, current_user)
+        if not settings.CANDIDATE_CAN_DOWNLOAD_RECORDINGS:
+            raise HTTPException(403, "Candidates are not allowed to download recordings")
+    else:
+        AccessPolicy.ensure_interview_viewer(iv, current_user)
 
     if not iv.recording_url or not Path(iv.recording_url).exists():
         raise HTTPException(404, "Recording not found")
