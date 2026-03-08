@@ -58,6 +58,8 @@ export default function InterviewPage() {
     // Stable refs so empty-dep useCallbacks always call the latest version
     const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
     const speakRef = useRef<((text: string) => void) | null>(null);
+    const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+    const ttsAudioUrlRef = useRef<string | null>(null);
 
     // ── Media / Timer ─────────────────────────────────────────────────────────
     const [muted, setMuted] = useState(false);
@@ -103,6 +105,19 @@ export default function InterviewPage() {
         setTabSwitches(tabSwRef.current);
     }, []);
 
+    const stopBackendTtsAudio = useCallback(() => {
+        const a = ttsAudioRef.current;
+        if (a) {
+            a.pause();
+            a.src = '';
+            ttsAudioRef.current = null;
+        }
+        if (ttsAudioUrlRef.current) {
+            URL.revokeObjectURL(ttsAudioUrlRef.current);
+            ttsAudioUrlRef.current = null;
+        }
+    }, []);
+
 
     const addMsg = useCallback((m: Message) => {
         setMessages(prev => {
@@ -129,7 +144,9 @@ export default function InterviewPage() {
         console.log("startListening called. isListeningRef:", isListeningRef.current, "camStream:", !!camStream.current, "isTtsSpeaking:", isTtsSpeaking.current);
 
         // Recover from Chrome TTS bug where onend never fires
-        if (isTtsSpeaking.current && !window.speechSynthesis?.speaking) {
+        const backendAudio = ttsAudioRef.current;
+        const backendSpeaking = Boolean(backendAudio && !backendAudio.paused && !backendAudio.ended);
+        if (isTtsSpeaking.current && !window.speechSynthesis?.speaking && !backendSpeaking) {
             console.warn("Recovering stuck TTS lock");
             isTtsSpeaking.current = false;
         }
@@ -278,13 +295,13 @@ export default function InterviewPage() {
 
     // ── TTS ───────────────────────────────────────────────────────────────────
     // speak is defined AFTER startListening so the dep array is valid (no TDZ error)
-    const speak = useCallback((text: string) => {
+    const speak = useCallback(async (text: string) => {
         console.log("TTS Triggered with text:", text);
         const synth = window.speechSynthesis;
-        if (!synth) return;
         ttsSeq.current += 1;
         const seq = ttsSeq.current;
-        synth.cancel();
+        synth?.cancel();
+        stopBackendTtsAudio();
         const clean = text.trim();
         if (!clean || clean.length < 2) {
             console.log("TTS text too short, proceeding to listen immediately.");
@@ -295,67 +312,131 @@ export default function InterviewPage() {
             return;
         }
 
-        const doSpeak = (voice: SpeechSynthesisVoice | null) => {
+        const onSpeakingStart = () => {
             if (seq !== ttsSeq.current) return;
-            const utt = new SpeechSynthesisUtterance(clean);
-            utt.lang = 'en-IN'; utt.rate = 0.92; utt.pitch = 1.05;
-            if (voice) utt.voice = voice;
-            utt.onstart = () => {
-                console.log("TTS onstart fired");
-                if (seq !== ttsSeq.current) return;
-                isTtsSpeaking.current = true;
-                setSttStatus('AI speaking...');
-                const tile = document.getElementById('tile-ai');
-                if (tile) tile.style.borderColor = '#22c55e';
-            };
-            const done = () => {
-                console.log("TTS done/onerror fired");
-                if (seq !== ttsSeq.current) return;
-                isTtsSpeaking.current = false;
-                setSttStatus('');
-                const tile = document.getElementById('tile-ai');
-                if (tile) tile.style.borderColor = '#334155';
-                if (pendingAutoListen.current && voiceOnRef.current) {
-                    console.log("Auto-listening triggered from TTS done.");
-                    pendingAutoListen.current = false;
-                    startListening();
-                }
-            };
-            utt.onend = done; utt.onerror = done;
-            (window as any)._currUtt = utt; // Anti-GC hack for Chrome
-            console.log("TTS calling synth.speak");
-            synth.speak(utt);
+            isTtsSpeaking.current = true;
+            setSttStatus('AI speaking...');
+            const tile = document.getElementById('tile-ai');
+            if (tile) tile.style.borderColor = '#22c55e';
         };
 
-        const voices = synth.getVoices();
-        if (!voices.length) {
-            let fired = false;
-            const handler = () => {
-                if (fired) return;
-                fired = true;
-                console.log("Voices loaded lazily");
-                const v = synth.getVoices();
-                doSpeak(v.find(x => x.lang === 'en-IN') || v.find(x => x.lang.startsWith('en')) || null);
-            };
-            synth.addEventListener('voiceschanged', handler, { once: true });
+        const onSpeakingDone = () => {
+            if (seq !== ttsSeq.current) return;
+            isTtsSpeaking.current = false;
+            setSttStatus('');
+            const tile = document.getElementById('tile-ai');
+            if (tile) tile.style.borderColor = '#334155';
+            if (pendingAutoListen.current && voiceOnRef.current) {
+                console.log("Auto-listening triggered from TTS done.");
+                pendingAutoListen.current = false;
+                startListening();
+            }
+        };
 
-            // Failsafe for Safari/Chrome bug where voiceschanged never fires
-            setTimeout(() => {
-                if (!fired) {
-                    console.warn("voiceschanged timeout! Forcing doSpeak...");
+        const speakWithWebSpeech = () => {
+            if (!synth) {
+                onSpeakingDone();
+                return;
+            }
+
+            const doSpeak = (voice: SpeechSynthesisVoice | null) => {
+                if (seq !== ttsSeq.current) return;
+                const utt = new SpeechSynthesisUtterance(clean);
+                utt.lang = 'en-IN'; utt.rate = 0.92; utt.pitch = 1.05;
+                if (voice) utt.voice = voice;
+                utt.onstart = () => {
+                    console.log("TTS onstart fired");
+                    onSpeakingStart();
+                };
+                const done = () => {
+                    console.log("TTS done/onerror fired");
+                    onSpeakingDone();
+                };
+                utt.onend = done; utt.onerror = done;
+                (window as any)._currUtt = utt; // Anti-GC hack for Chrome
+                console.log("TTS calling synth.speak");
+                synth.speak(utt);
+            };
+
+            const voices = synth.getVoices();
+            if (!voices.length) {
+                let fired = false;
+                const handler = () => {
+                    if (fired) return;
                     fired = true;
-                    synth.removeEventListener('voiceschanged', handler);
-                    doSpeak(null);
+                    console.log("Voices loaded lazily");
+                    const v = synth.getVoices();
+                    doSpeak(v.find(x => x.lang === 'en-IN') || v.find(x => x.lang.startsWith('en')) || null);
+                };
+                synth.addEventListener('voiceschanged', handler, { once: true });
+
+                // Failsafe for Safari/Chrome bug where voiceschanged never fires
+                setTimeout(() => {
+                    if (!fired) {
+                        console.warn("voiceschanged timeout! Forcing doSpeak...");
+                        fired = true;
+                        synth.removeEventListener('voiceschanged', handler);
+                        doSpeak(null);
+                    }
+                }, 600);
+            } else {
+                console.log("Voices already loaded");
+                doSpeak(voices.find(x => x.lang === 'en-IN') || voices.find(x => x.lang.startsWith('en')) || null);
+            }
+        };
+
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(`${API_BASE}/tts/synthesize`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+                credentials: 'include',
+                body: JSON.stringify({ text: clean }),
+            });
+            if (seq !== ttsSeq.current) return;
+
+            const contentType = (res.headers.get('content-type') || '').toLowerCase();
+            if (res.ok && contentType.startsWith('audio/')) {
+                const audioBlob = await res.blob();
+                if (seq !== ttsSeq.current || !audioBlob.size) {
+                    speakWithWebSpeech();
+                    return;
                 }
-            }, 600);
-        } else {
-            console.log("Voices already loaded");
-            doSpeak(voices.find(x => x.lang === 'en-IN') || voices.find(x => x.lang.startsWith('en')) || null);
+
+                const objectUrl = URL.createObjectURL(audioBlob);
+                ttsAudioUrlRef.current = objectUrl;
+                const audio = new Audio(objectUrl);
+                ttsAudioRef.current = audio;
+
+                audio.onplay = () => onSpeakingStart();
+                const done = () => {
+                    stopBackendTtsAudio();
+                    onSpeakingDone();
+                };
+                audio.onended = done;
+                audio.onerror = done;
+                try {
+                    await audio.play();
+                    return;
+                } catch (err) {
+                    console.warn("Backend TTS audio play failed. Falling back to webspeech.", err);
+                    stopBackendTtsAudio();
+                    speakWithWebSpeech();
+                    return;
+                }
+            }
+        } catch (err) {
+            console.warn("Backend TTS request failed. Falling back to webspeech.", err);
         }
-    }, [startListening]);
+
+        speakWithWebSpeech();
+    }, [startListening, stopBackendTtsAudio]);
 
     // Keep speakRef current so addMsg (empty-dep useCallback) always calls the latest speak
-    useEffect(() => { speakRef.current = speak; }, [speak]);
+    useEffect(() => { speakRef.current = (text: string) => { void speak(text); }; }, [speak]);
 
     // ── Send message ──────────────────────────────────────────────────────────
     const sendMessage = useCallback(async (text: string) => {
@@ -383,6 +464,7 @@ export default function InterviewPage() {
         doneRef.current = true;
         stopListening();
         window.speechSynthesis?.cancel();
+        stopBackendTtsAudio();
         if (timerRef.current) clearInterval(timerRef.current);
         if (visionRef.current) clearInterval(visionRef.current);
 
@@ -416,7 +498,7 @@ export default function InterviewPage() {
             setCompletedData({ title: 'Interview Complete!', sub: 'Processing results...', scores: [] });
         }
         setCompleted(true);
-    }, [token]);
+    }, [token, stopBackendTtsAudio]);
 
     const stopLocalCamera = useCallback(() => {
         const stream = camStream.current;
@@ -569,9 +651,11 @@ export default function InterviewPage() {
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
             if (visionRef.current) clearInterval(visionRef.current);
+            window.speechSynthesis?.cancel();
+            stopBackendTtsAudio();
             camStream.current?.getTracks().forEach(t => t.stop());
         };
-    }, [token]);
+    }, [token, stopBackendTtsAudio]);
 
     // ── Focus/visibility tracking: tab switches + window/app switches ─────────
     useEffect(() => {
@@ -645,7 +729,12 @@ export default function InterviewPage() {
 
     const toggleVoice = () => {
         const next = !voiceOn; setVoiceOn(next); voiceOnRef.current = next;
-        if (!next && isListeningRef.current) stopListening();
+        if (!next) {
+            if (isListeningRef.current) stopListening();
+            window.speechSynthesis?.cancel();
+            stopBackendTtsAudio();
+            isTtsSpeaking.current = false;
+        }
     };
 
     const toggleListen = () => {
@@ -654,6 +743,7 @@ export default function InterviewPage() {
         } else {
             isTtsSpeaking.current = false;
             window.speechSynthesis?.cancel();
+            stopBackendTtsAudio();
             startListening();
         }
     };

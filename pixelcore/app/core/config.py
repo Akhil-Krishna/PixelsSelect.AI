@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     GROQ_STT_MODEL: str = "whisper-large-v3"
     GROQ_STT_TIMEOUT: float = 20.0
 
+    # ─── Text-to-Speech provider: webspeech | kokoro ──────────────────────────
+    # webspeech = frontend browser synthesis fallback; kokoro = local backend TTS
+    TTS_PROVIDER: str = "webspeech"
+    KOKORO_VOICE: str = "af_heart"
+    KOKORO_SPEED: float = 1.0
+    ENABLE_TTS_WARMUP: bool = True
+
     # ─── Local model serving (OpenAI-compatible) ──────────────────────────────
     # When enabled, a /v1/* passthrough is exposed that routes to a local
     # OpenAI-compatible server (e.g. llama.cpp, vLLM, or LM Studio).
@@ -139,6 +146,7 @@ class Settings(BaseSettings):
         "ENABLE_REQUEST_ID_MIDDLEWARE",
         "ENABLE_IDEMPOTENCY",
         "ENABLE_VISION_WARMUP",
+        "ENABLE_TTS_WARMUP",
         "VISION_PERSIST_ENABLED",
         "STT_VAD_FILTER",
         "STT_LOCAL_FASTPATH_ENABLED",

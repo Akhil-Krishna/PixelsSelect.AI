@@ -84,6 +84,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logging.getLogger(__name__).warning("Vision warmup skipped: %s", e)
 
+    if settings.ENABLE_TTS_WARMUP:
+        try:
+            from app.services.tts_service import warmup_tts
+            asyncio.create_task(warmup_tts())
+        except Exception as e:
+            logging.getLogger(__name__).warning("TTS warmup skipped: %s", e)
+
     # Startup banner
     print("=" * 62)
     print(f"  {settings.APP_NAME:<30}  env={settings.APP_ENV}")
@@ -91,6 +98,7 @@ async def lifespan(app: FastAPI):
     print(f"  VISION_PROVIDER : {settings.VISION_PROVIDER}")
     stt_model = settings.GROQ_STT_MODEL if settings.STT_PROVIDER == "groq" else settings.STT_MODEL
     print(f"  STT_PROVIDER    : {settings.STT_PROVIDER}  ({stt_model})")
+    print(f"  TTS_PROVIDER    : {settings.TTS_PROVIDER}")
     print(f"  EMAIL_PROVIDER  : {settings.EMAIL_PROVIDER}")
     print(f"  CELERY_ENABLED  : {settings.CELERY_ENABLED}")
     print(f"  DB              : {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
@@ -138,6 +146,7 @@ async def health():
     db_ok = False
     stt_ready = None
     vision_ready = None
+    tts_ready = None
 
     try:
         async with AsyncSessionLocal() as session:
@@ -158,11 +167,18 @@ async def health():
     except Exception:
         pass
 
+    try:
+        from app.services.tts_service import model_ready as tts_model_ready
+        tts_ready = bool(tts_model_ready())
+    except Exception:
+        pass
+
     return {
         "status": "ok" if db_ok else "degraded",
         "database": "connected" if db_ok else "disconnected",
         "stt_ready": stt_ready,
         "vision_ready": vision_ready,
+        "tts_ready": tts_ready,
         "env": settings.APP_ENV,
         "version": "2.0.0",
     }

@@ -225,6 +225,12 @@ class InterviewerQuestion(BaseModel):
     question: str
 
 
+# ─── TTS ───────────────────────────────────────────────────────────────────────
+
+class TTSRequest(BaseModel):
+    text: str
+
+
 # ── Forward-reference resolution ──────────────────────────────────────────────
 Token.model_rebuild()
 OrgOut.model_rebuild()
