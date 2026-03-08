@@ -28,7 +28,7 @@ export function StartOverlay({ title, jobRole, durationMin, previewRef, loading,
                     <CheckItem icon="fa-video" color="var(--success)" label="Camera access" />
                     <CheckItem icon="fa-microphone" color="var(--success)" label="Microphone (Whisper STT)" />
                     <CheckItem icon="fa-wifi" color="var(--success)" label="Connection ready" />
-                    <CheckItem icon="fa-eye" color="var(--warning)" label="Integrity monitoring enabled" status="warn" />
+                    <CheckItem icon="fa-shield-halved" color="var(--success)" label="Integrity monitoring active" />
                 </div>
 
                 {/* Error banner */}

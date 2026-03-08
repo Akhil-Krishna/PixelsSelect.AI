@@ -18,6 +18,13 @@ const VISION_INTERVAL_MS = 1500;
 interface ScoreBox { label: string; val: number; color: string; }
 interface CompletedState { title: string; sub: string; scores: ScoreBox[]; }
 
+const CODING_PROMPT_RE = /\b(coding[\s_-]*question|write code|write (a )?function|implement|algorithm|time complexity|space complexity|debug|code snippet|go ahead with your solution|provide your solution)\b|```/i;
+const hasMeaningfulTranscript = (text: string) => /[A-Za-z0-9]/.test(text);
+const isCodingPromptText = (text: string) => {
+    const normalized = (text || '').toLowerCase();
+    return normalized.includes('coding_question:') || CODING_PROMPT_RE.test(normalized);
+};
+
 export default function InterviewPage() {
     const params = useParams();
     const token = params.token as string;
@@ -87,7 +94,14 @@ export default function InterviewPage() {
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const previewVideoRef = useRef<HTMLVideoElement>(null);
     const camStream = useRef<MediaStream | null>(null);
+    const screenStream = useRef<MediaStream | null>(null);
     const recorder = useRef<MediaRecorder | null>(null);
+    const recordingStreamRef = useRef<MediaStream | null>(null);
+    const recordingMime = useRef<string>('video/webm');
+    const recordingAudioCtxRef = useRef<AudioContext | null>(null);
+    const recordingAudioDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+    const recordingAudioSourcesRef = useRef<Map<string, MediaStreamAudioSourceNode>>(new Map());
+    const recordingTtsSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
     const recChunks = useRef<Blob[]>([]);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const visionRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -95,6 +109,8 @@ export default function InterviewPage() {
     const frameSeqRef = useRef(0);
     const lastTabSwitchMsRef = useRef(0);
     const doneRef = useRef(false);
+    const manualSendRequiredRef = useRef(false);
+    const awaitingAiReplyRef = useRef(false);
 
     const incrementTabSwitch = useCallback(() => {
         const now = Date.now();
@@ -106,6 +122,10 @@ export default function InterviewPage() {
     }, []);
 
     const stopBackendTtsAudio = useCallback(() => {
+        if (recordingTtsSourceRef.current) {
+            try { recordingTtsSourceRef.current.disconnect(); } catch { }
+            recordingTtsSourceRef.current = null;
+        }
         const a = ttsAudioRef.current;
         if (a) {
             a.pause();
@@ -118,6 +138,95 @@ export default function InterviewPage() {
         }
     }, []);
 
+    const resetRecordingAudioGraph = useCallback(() => {
+        recordingAudioSourcesRef.current.forEach((node) => {
+            try { node.disconnect(); } catch { }
+        });
+        recordingAudioSourcesRef.current.clear();
+
+        if (recordingTtsSourceRef.current) {
+            try { recordingTtsSourceRef.current.disconnect(); } catch { }
+            recordingTtsSourceRef.current = null;
+        }
+
+        const ctx = recordingAudioCtxRef.current;
+        if (ctx && ctx.state !== 'closed') {
+            void ctx.close().catch(() => { });
+        }
+        recordingAudioCtxRef.current = null;
+        recordingAudioDestRef.current = null;
+        recordingStreamRef.current = null;
+    }, []);
+
+    const ensureRecordingAudioGraph = useCallback(() => {
+        if (!recordingAudioCtxRef.current || recordingAudioCtxRef.current.state === 'closed') {
+            const win = window as Window & { webkitAudioContext?: typeof AudioContext };
+            const AudioContextClass = win.AudioContext || win.webkitAudioContext;
+            if (!AudioContextClass) return { ctx: null, dest: null };
+            recordingAudioCtxRef.current = new AudioContextClass();
+            recordingAudioDestRef.current = recordingAudioCtxRef.current.createMediaStreamDestination();
+        }
+        const ctx = recordingAudioCtxRef.current;
+        if (ctx?.state === 'suspended') {
+            void ctx.resume().catch(() => { });
+        }
+        return {
+            ctx: recordingAudioCtxRef.current,
+            dest: recordingAudioDestRef.current,
+        };
+    }, []);
+
+    const attachStreamToRecordingMix = useCallback((key: string, stream: MediaStream | null) => {
+        if (!stream || recordingAudioSourcesRef.current.has(key)) return;
+        const audioTracks = stream.getAudioTracks();
+        if (!audioTracks.length) return;
+
+        const { ctx, dest } = ensureRecordingAudioGraph();
+        if (!ctx || !dest) return;
+
+        const sourceStream = new MediaStream(audioTracks);
+        const sourceNode = ctx.createMediaStreamSource(sourceStream);
+        sourceNode.connect(dest);
+        recordingAudioSourcesRef.current.set(key, sourceNode);
+    }, [ensureRecordingAudioGraph]);
+
+    const syncRemoteStreamsToRecordingMix = useCallback((streams: import('../../../hooks/useWebRTC').RemoteParticipant[]) => {
+        const active = new Set(streams.map((p) => `remote:${p.participantId}`));
+        streams.forEach((p) => {
+            attachStreamToRecordingMix(`remote:${p.participantId}`, p.stream ?? null);
+        });
+        recordingAudioSourcesRef.current.forEach((node, key) => {
+            if (!key.startsWith("remote:")) return;
+            if (active.has(key)) return;
+            try { node.disconnect(); } catch { }
+            recordingAudioSourcesRef.current.delete(key);
+        });
+    }, [attachStreamToRecordingMix]);
+
+    const attachTtsAudioToRecordingMix = useCallback((audioEl: HTMLAudioElement) => {
+        const ctx = recordingAudioCtxRef.current;
+        const dest = recordingAudioDestRef.current;
+        if (!ctx || !dest) return;
+
+        if (recordingTtsSourceRef.current) {
+            try { recordingTtsSourceRef.current.disconnect(); } catch { }
+            recordingTtsSourceRef.current = null;
+        }
+        try {
+            const source = ctx.createMediaElementSource(audioEl);
+            source.connect(dest);
+            source.connect(ctx.destination);
+            recordingTtsSourceRef.current = source;
+        } catch (err) {
+            console.warn("Could not connect AI audio to recorder mix", err);
+        }
+    }, []);
+
+    const stopScreenShare = useCallback(() => {
+        screenStream.current?.getTracks().forEach(track => track.stop());
+        screenStream.current = null;
+    }, []);
+
 
     const addMsg = useCallback((m: Message) => {
         setMessages(prev => {
@@ -125,6 +234,7 @@ export default function InterviewPage() {
             return [...prev, m];
         });
         if (m.role === 'ai') {
+            awaitingAiReplyRef.current = false;
             setQCount(q => q + 1);
             const text = m.content.replace(/CODING_QUESTION:/gi, '').replace(/INTERVIEW_COMPLETE/gi, '').trim();
             if (text) {
@@ -132,7 +242,17 @@ export default function InterviewPage() {
                 // Use ref so we always call the latest speak (avoids stale closure)
                 speakRef.current?.(text);
             }
-            if (m.content.startsWith('CODING_QUESTION:')) setCodeOpen(true);
+            const isCodingPrompt = isCodingPromptText(m.content);
+            if (isCodingPrompt) {
+                setCodeOpen(true);
+                setTextInput(prev => prev.trim() ? prev : '[CODE SUBMITTED]');
+                manualSendRequiredRef.current = true;
+                pendingAutoListen.current = false;
+                if (isListeningRef.current) stopListening();
+                setSttStatus('Coding mode: voice paused');
+            } else if (m.content.includes('INTERVIEW_COMPLETE')) {
+                manualSendRequiredRef.current = false;
+            }
             if (m.content.includes('INTERVIEW_COMPLETE')) setTimeout(endInterview, 1500);
         }
         if (m.role === 'candidate') setRCount(r => r + 1);
@@ -142,6 +262,11 @@ export default function InterviewPage() {
     // ── STT (Whisper) ─────────────────────────────────────────────────────────
     const startListening = useCallback(() => {
         console.log("startListening called. isListeningRef:", isListeningRef.current, "camStream:", !!camStream.current, "isTtsSpeaking:", isTtsSpeaking.current);
+
+        if (manualSendRequiredRef.current) {
+            setSttStatus('Coding mode: voice paused');
+            return;
+        }
 
         // Recover from Chrome TTS bug where onend never fires
         const backendAudio = ttsAudioRef.current;
@@ -183,7 +308,7 @@ export default function InterviewPage() {
                 console.log("STT segment blob size:", blob.size);
                 if (blob.size < 200) {
                     // Audio too short/silent — retry listening unless TTS is speaking
-                    if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current) {
+                    if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current && !awaitingAiReplyRef.current) {
                         setTimeout(() => { if (!isTtsSpeaking.current) startListening(); }, 500);
                     }
                     return;
@@ -198,11 +323,23 @@ export default function InterviewPage() {
                     const d = await res.json().catch(() => ({}));
                     console.log("STT response from backend:", d);
                     if (d.text?.trim()) {
+                        const text = d.text.trim();
+                        if (manualSendRequiredRef.current) {
+                            setSttStatus('Coding mode: voice paused');
+                            return;
+                        }
+                        if (!hasMeaningfulTranscript(text)) {
+                            if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current && !awaitingAiReplyRef.current) {
+                                setTimeout(() => { if (!isTtsSpeaking.current) startListening(); }, 500);
+                            }
+                            return;
+                        }
                         // Use ref to always call the latest sendMessage (avoids stale closure)
-                        sendMessageRef.current?.(d.text.trim());
+                        awaitingAiReplyRef.current = true;
+                        sendMessageRef.current?.(text);
                     } else {
                         console.log("STT text empty — retrying listen.");
-                        if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current) {
+                        if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current && !awaitingAiReplyRef.current) {
                             setTimeout(() => { if (!isTtsSpeaking.current) startListening(); }, 500);
                         } else {
                             pendingAutoListen.current = true;
@@ -410,6 +547,7 @@ export default function InterviewPage() {
                 ttsAudioUrlRef.current = objectUrl;
                 const audio = new Audio(objectUrl);
                 ttsAudioRef.current = audio;
+                attachTtsAudioToRecordingMix(audio);
 
                 audio.onplay = () => onSpeakingStart();
                 const done = () => {
@@ -433,7 +571,7 @@ export default function InterviewPage() {
         }
 
         speakWithWebSpeech();
-    }, [startListening, stopBackendTtsAudio]);
+    }, [startListening, stopBackendTtsAudio, attachTtsAudioToRecordingMix]);
 
     // Keep speakRef current so addMsg (empty-dep useCallback) always calls the latest speak
     useEffect(() => { speakRef.current = (text: string) => { void speak(text); }; }, [speak]);
@@ -441,6 +579,9 @@ export default function InterviewPage() {
     // ── Send message ──────────────────────────────────────────────────────────
     const sendMessage = useCallback(async (text: string) => {
         if (!text.trim() || doneRef.current || sending) return;
+        if (isListeningRef.current) stopListening();
+        pendingAutoListen.current = false;
+        awaitingAiReplyRef.current = true;
         setSending(true);
         try {
             // Backend /chat now returns List[MessageOut] — always an array
@@ -449,9 +590,15 @@ export default function InterviewPage() {
                 code_snippet: codeOpen && codeInput.trim() ? codeInput.trim() : undefined,
             });
             setTextInput(''); setCodeInput('');
+            manualSendRequiredRef.current = false;
+            const hasAiReply = msgs.some(m => m.role === 'ai');
+            if (!hasAiReply) awaitingAiReplyRef.current = false;
             msgs.forEach(addMsg);
             pendingAutoListen.current = true;
-        } catch (e) { console.error(e); }
+        } catch (e) {
+            awaitingAiReplyRef.current = false;
+            console.error(e);
+        }
         finally { setSending(false); }
     }, [token, codeOpen, codeInput, codeLang, addMsg, sending]);
 
@@ -472,7 +619,7 @@ export default function InterviewPage() {
             if (recorder.current) {
                 recorder.current.stop();
                 await new Promise(r => { recorder.current!.onstop = r as () => void; setTimeout(r, 2500); });
-                const blob = new Blob(recChunks.current, { type: 'video/webm' });
+                const blob = new Blob(recChunks.current, { type: recordingMime.current || 'video/webm' });
                 const fd = new FormData(); fd.append('file', blob, 'recording.webm');
                 const t = localStorage.getItem('token');
                 await fetch(`${API_BASE}/recordings/upload/${token}`, {
@@ -496,9 +643,15 @@ export default function InterviewPage() {
             });
         } catch {
             setCompletedData({ title: 'Interview Complete!', sub: 'Processing results...', scores: [] });
+        } finally {
+            recorder.current = null;
+            recordingStreamRef.current = null;
+            setIsRecording(false);
+            stopScreenShare();
+            resetRecordingAudioGraph();
         }
         setCompleted(true);
-    }, [token, stopBackendTtsAudio]);
+    }, [token, stopBackendTtsAudio, stopScreenShare, resetRecordingAudioGraph]);
 
     const stopLocalCamera = useCallback(() => {
         const stream = camStream.current;
@@ -534,16 +687,65 @@ export default function InterviewPage() {
     // ── Begin interview ───────────────────────────────────────────────────────
     const beginInterview = async () => {
         setStartLoading(true);
+        setStartError('');
         window.speechSynthesis?.getVoices();
         try {
-            // Start video recording
-            if (camStream.current) {
-                try {
-                    recorder.current = new MediaRecorder(camStream.current, { mimeType: 'video/webm;codecs=vp9,opus' });
-                    recorder.current.ondataavailable = e => { if (e.data.size) recChunks.current.push(e.data); };
-                    recorder.current.start(3000);
-                    setIsRecording(true);
-                } catch { }
+            // Screen share must be requested from this user gesture handler.
+            try {
+                const shared = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+                screenStream.current = shared;
+
+                const videoTrack = shared.getVideoTracks()[0];
+                if (videoTrack) {
+                    videoTrack.onended = () => {
+                        stopScreenShare();
+                    };
+                }
+            } catch (err) {
+                console.warn("Screen share permission denied/cancelled", err);
+                setStartError('Screen sharing is required to start the interview.');
+                return;
+            }
+
+            // Start recording from a mixed stream:
+            // screen video + mic audio + shared-screen audio + remote participant audio.
+            const shared = screenStream.current;
+            if (!shared) {
+                setStartError('Could not access shared screen stream.');
+                return;
+            }
+            const screenVideoTrack = shared.getVideoTracks()[0];
+            if (!screenVideoTrack) {
+                setStartError('No screen video track found for recording.');
+                stopScreenShare();
+                return;
+            }
+            const captureStream = new MediaStream([screenVideoTrack]);
+            attachStreamToRecordingMix('mic', camStream.current);
+            attachStreamToRecordingMix('screen', shared);
+            syncRemoteStreamsToRecordingMix(remoteStreams);
+            recordingAudioDestRef.current?.stream.getAudioTracks().forEach(track => captureStream.addTrack(track));
+            recordingStreamRef.current = captureStream;
+            const mime = [
+                'video/webm;codecs=vp9,opus',
+                'video/webm;codecs=vp8,opus',
+                'video/webm',
+                'video/mp4',
+            ].find(m => MediaRecorder.isTypeSupported(m)) || '';
+            recordingMime.current = mime || 'video/webm';
+            console.info("Interview recording mime type:", recordingMime.current);
+
+            try {
+                recorder.current = new MediaRecorder(captureStream, mime ? { mimeType: mime } : undefined);
+                recChunks.current = [];
+                recorder.current.ondataavailable = e => { if (e.data.size) recChunks.current.push(e.data); };
+                recorder.current.start(3000);
+                setIsRecording(true);
+            } catch (err) {
+                console.error("Failed to initialize interview recorder", err);
+                setStartError('Recording could not be started on this browser.');
+                stopScreenShare();
+                return;
             }
 
             const res = await apiCall<{ messages?: Message[]; ai_paused?: boolean }>(
@@ -609,6 +811,8 @@ export default function InterviewPage() {
             } else {
                 setStartError(msg);
             }
+            stopScreenShare();
+            resetRecordingAudioGraph();
         } finally { setStartLoading(false); }
     };
 
@@ -654,8 +858,10 @@ export default function InterviewPage() {
             window.speechSynthesis?.cancel();
             stopBackendTtsAudio();
             camStream.current?.getTracks().forEach(t => t.stop());
+            stopScreenShare();
+            resetRecordingAudioGraph();
         };
-    }, [token, stopBackendTtsAudio]);
+    }, [token, stopBackendTtsAudio, stopScreenShare, resetRecordingAudioGraph]);
 
     // ── Focus/visibility tracking: tab switches + window/app switches ─────────
     useEffect(() => {
@@ -692,6 +898,11 @@ export default function InterviewPage() {
         });
         return () => cancelAnimationFrame(raf);
     }, [started]);
+
+    useEffect(() => {
+        if (!isRecording) return;
+        syncRemoteStreamsToRecordingMix(remoteStreams);
+    }, [remoteStreams, isRecording, syncRemoteStreamsToRecordingMix]);
 
     // ── WebRTC: broadcast candidate camera to HR watchers ─────────────────────
     // Activates after interview starts and camera permission is granted.

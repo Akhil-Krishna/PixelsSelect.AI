@@ -53,10 +53,10 @@ export function VideoGrid({
 
             {/* Controls */}
             <div className="controls-bar">
-                <button className="btn btn-o" onClick={onToggleMute}>
+                <button className="btn btn-o watch-ctrl-btn" onClick={onToggleMute}>
                     <i className={`fas fa-microphone${roomMuted ? '-slash' : ''}`} /> Mic
                 </button>
-                <button className="btn btn-o" onClick={onToggleCam}>
+                <button className="btn btn-o watch-ctrl-btn" onClick={onToggleCam}>
                     <i className={`fas fa-video${roomCamOff ? '-slash' : ''}`} /> Camera
                 </button>
                 <button className="btn" style={{ background: '#ef4444', color: '#fff' }} onClick={onLeave}>
