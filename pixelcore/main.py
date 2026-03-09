@@ -42,13 +42,17 @@ async def _seed_demo_data() -> None:
 
         demo_users = [
             User(email="admin@demo.com",       full_name="Admin User",       role=UserRole.ADMIN,
-                 hashed_password=get_password_hash("admin123"), organisation_id=org.id),
+                 hashed_password=get_password_hash("admin123"), organisation_id=org.id,
+                 is_verified=True),
             User(email="hr@demo.com",           full_name="HR Manager",       role=UserRole.HR,
-                 hashed_password=get_password_hash("hr123456"), organisation_id=org.id),
+                 hashed_password=get_password_hash("hr123456"), organisation_id=org.id,
+                 is_verified=True),
             User(email="interviewer@demo.com",  full_name="Tech Interviewer", role=UserRole.INTERVIEWER,
-                 hashed_password=get_password_hash("int12345"), organisation_id=org.id),
+                 hashed_password=get_password_hash("int12345"), organisation_id=org.id,
+                 is_verified=True),
             User(email="candidate@demo.com",    full_name="John Candidate",   role=UserRole.CANDIDATE,
-                 hashed_password=get_password_hash("can12345")),
+                 hashed_password=get_password_hash("can12345"),
+                 is_verified=True),
         ]
         session.add_all(demo_users)
         await session.commit()

@@ -72,7 +72,6 @@ export function useWebRTC({
         if (!jwtToken || !token) return;
 
         const wsUrl = `${WS_BASE}/api/v1/ws/rtc/${token}?token=${encodeURIComponent(jwtToken)}`;
-        console.log('[WebRTC] connecting');
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 
@@ -123,7 +122,7 @@ export function useWebRTC({
             };
 
             pc.oniceconnectionstatechange = () => {
-                console.log('[WebRTC] ICE state', targetPid, pc.iceConnectionState);
+
                 if (pc.iceConnectionState === 'failed') {
                     pc.restartIce();
                 }
@@ -136,7 +135,7 @@ export function useWebRTC({
             if (initiator) {
                 pc.onnegotiationneeded = async () => {
                     try {
-                        console.log('[WebRTC] negotiation needed →', targetPid);
+
                         const offer = await pc.createOffer();
                         await pc.setLocalDescription(offer);
                         send({ type: 'offer', to: targetPid, sdp: pc.localDescription });
@@ -170,9 +169,12 @@ export function useWebRTC({
         }
 
         // ── WS message handler ────────────────────────────────────────────────
-        ws.onopen = () => console.log('[WebRTC] WS open');
-        ws.onclose = (e) => console.log('[WebRTC] WS closed', e.code, e.reason);
-        ws.onerror = (e) => console.error('[WebRTC] WS error', e);
+        ws.onopen = () => { };
+        ws.onclose = () => { };
+        ws.onerror = () => console.error(
+            '[WebRTC] WS connection failed. URL:', wsUrl,
+            '— Is the backend running on ws://localhost:8000? Check NEXT_PUBLIC_WS_URL env var.'
+        );
 
         ws.onmessage = async (ev) => {
             let msg: Record<string, unknown>;
@@ -183,7 +185,7 @@ export function useWebRTC({
             if (type === 'joined') {
                 const p = msg.participant as { participant_id: string; role: string };
                 selfPidRef.current = p.participant_id;
-                console.log('[WebRTC] joined as', p.role, p.participant_id);
+
             }
 
             if (type === 'participants_snapshot') {
@@ -213,13 +215,13 @@ export function useWebRTC({
             // Backend tells the NEW joiner's existing peers to initiate with them
             if (type === 'negotiate_with') {
                 const targetPid = msg.participant_id as string;
-                console.log('[WebRTC] negotiate_with', targetPid);
+
                 createPeer(targetPid, true /* I am the initiator */);
             }
 
             if (type === 'offer') {
                 const fromPid = msg.from as string;
-                console.log('[WebRTC] offer from', fromPid);
+
                 const pc = createPeer(fromPid, false);
 
                 // Perfect negotiation: handle glare
@@ -271,7 +273,7 @@ export function useWebRTC({
         };
 
         return () => {
-            console.log('[WebRTC] cleanup');
+
             ws.close();
             wsRef.current = null;
             peersRef.current.forEach(pc => pc.close());

@@ -4,7 +4,28 @@ export interface User {
     email: string;
     role: 'admin' | 'hr' | 'interviewer' | 'candidate';
     is_active: boolean;
+    is_verified?: boolean;
+    last_login?: string;
     organisation?: { id: string; name: string };
+    department_id?: string;
+    department_name?: string;
+}
+
+export interface Department {
+    id: string;
+    name: string;
+    organisation_id: string;
+    lead_id?: string;
+    lead_name?: string;
+    created_at: string;
+}
+
+export interface QuestionBank {
+    id: string;
+    department_id: string;
+    label: string;
+    file_name: string;
+    created_at: string;
 }
 
 export interface Interview {
@@ -26,9 +47,9 @@ export interface Interview {
     has_recording?: boolean;
     resume_path?: string;
     passed?: boolean;
-    temp_password?: string;
     ai_paused?: boolean;
     started_at?: string;
+    department_id?: string;
 }
 
 export interface Message {

@@ -143,6 +143,9 @@ async def rtc_signaling(
     missed_heartbeats = 0
 
     # ── Auth ──────────────────────────────────────────────────────────────────
+    # Try query-param first, then fall back to httpOnly cookie
+    if not token:
+        token = websocket.cookies.get("access_token")
     if not token:
         await websocket.close(code=4001, reason="Missing auth token")
         return

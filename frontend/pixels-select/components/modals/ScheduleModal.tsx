@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Modal } from '../ui/Modal';
 import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { apiCall, uploadFile } from '../../lib/api';
-import { User } from '../../lib/types';
+import { User, Department, QuestionBank } from '../../lib/types';
 
 interface ScheduleModalProps {
     open: boolean;
@@ -29,7 +29,15 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
     const [duration, setDuration] = useState(60);
     const [desc, setDesc] = useState('');
 
-    // Question Bank
+    // Department
+    const [departments, setDepartments] = useState<Department[]>([]);
+    const [selectedDeptId, setSelectedDeptId] = useState('');
+    const [deptLoaded, setDeptLoaded] = useState(false);
+
+    // Question Bank — from department
+    const [deptQBs, setDeptQBs] = useState<QuestionBank[]>([]);
+    const [selectedQBId, setSelectedQBId] = useState('');
+    // Fallback manual entry
     const [questions, setQuestions] = useState('');
     const [qbLabel, setQbLabel] = useState('Click to upload TXT question bank');
 
@@ -40,10 +48,36 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
     const [selectedIvs, setSelectedIvs] = useState<string[]>([]);
     const [ivsLoaded, setIvsLoaded] = useState(false);
 
+    // Load departments on open
+    useEffect(() => {
+        if (open && !deptLoaded) {
+            apiCall<Department[]>('GET', '/departments')
+                .then(setDepartments)
+                .catch(() => setDepartments([]));
+            setDeptLoaded(true);
+        }
+    }, [open, deptLoaded]);
+
+    // Load question banks when department changes
+    useEffect(() => {
+        if (selectedDeptId) {
+            apiCall<QuestionBank[]>('GET', `/departments/${selectedDeptId}/question-banks`)
+                .then(setDeptQBs)
+                .catch(() => setDeptQBs([]));
+        } else {
+            setDeptQBs([]);
+        }
+        setSelectedQBId('');
+    }, [selectedDeptId]);
+
     const loadInterviewers = async () => {
-        if (ivsLoaded) return;
-        const list = await apiCall<User[]>('GET', '/users/interviewers').catch(() => [] as User[]);
+        if (ivsLoaded && !selectedDeptId) return;
+        const url = selectedDeptId
+            ? `/users/interviewers?department_id=${selectedDeptId}`
+            : '/users/interviewers';
+        const list = await apiCall<User[]>('GET', url).catch(() => [] as User[]);
         setInterviewers(list);
+        setSelectedIvs([]);
         setIvsLoaded(true);
     };
 
@@ -67,8 +101,8 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
 
     const handleQuestionBankFile = async (file: File) => {
         const lower = file.name.toLowerCase();
-        if (!lower.endsWith('.txt')) {
-            setError('Question bank upload supports TXT files only. Use one question per line.');
+        if (!lower.endsWith('.txt') && !lower.endsWith('.csv')) {
+            setError('Question bank upload supports TXT and CSV files only.');
             return;
         }
         try {
@@ -89,7 +123,7 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
         setLoading(true);
         setError('');
         try {
-            const iv = await apiCall<{ id: string; temp_password?: string; access_token: string }>('POST', '/interviews', {
+            const body: Record<string, unknown> = {
                 title,
                 job_role: role,
                 candidate_email: email,
@@ -97,17 +131,28 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
                 duration_minutes: duration,
                 description: desc || null,
                 interviewer_ids: selectedIvs,
-                question_bank: parseQuestions(questions),
                 enable_emotion_analysis: true,
                 enable_cheating_detection: true,
-            });
+            };
+
+            // Department
+            if (selectedDeptId) body.department_id = selectedDeptId;
+
+            // Question bank: prefer department QB, fallback to manual
+            if (selectedQBId) {
+                body.question_bank_id = selectedQBId;
+            } else {
+                body.question_bank = parseQuestions(questions);
+            }
+
+            const iv = await apiCall<{ id: string; access_token: string }>('POST', '/interviews', body);
 
             if (resumeFile && iv.id) {
                 await uploadFile(`/interviews/${iv.id}/resume`, resumeFile);
             }
 
             onClose();
-            onSuccess(iv.temp_password, email);
+            onSuccess(undefined, email);
         } catch (e: unknown) {
             setError((e as Error).message);
         } finally {
@@ -162,6 +207,13 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
                         </div>
                     </div>
                     <div className="form-group">
+                        <label className="form-label">Department <span className="optional">(optional — filters interviewers &amp; question banks)</span></label>
+                        <select value={selectedDeptId} onChange={e => setSelectedDeptId(e.target.value)}>
+                            <option value="">Entire Organisation</option>
+                            {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                        </select>
+                    </div>
+                    <div className="form-group">
                         <label className="form-label">Description <span className="optional">(optional)</span></label>
                         <textarea rows={2} value={desc} onChange={e => setDesc(e.target.value)}
                             placeholder="Interview notes or instructions for the candidate" />
@@ -172,33 +224,53 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
             {/* Tab 2: Question Bank */}
             {tab === 2 && (
                 <>
-                    <Alert type="info">
-                        AI will use these questions in order. Leave empty to let AI generate based on the job role.
-                    </Alert>
-                    <div className="form-group" style={{ marginTop: 12 }}>
-                        <label className="form-label">Upload Question Bank <span className="optional">(TXT — one question per line)</span></label>
-                        <div className="file-drop" onClick={() => document.getElementById('qbFile')?.click()}>
-                            <i className="fas fa-file-lines" style={{ fontSize: 28, color: '#4F46E5' }} />
-                            <div style={{ fontSize: 13 }}>{qbLabel}</div>
-                            <p className="form-hint" style={{ marginTop: 6 }}>Each line becomes a question. Prefix with CODING: for coding questions.</p>
+                    {selectedDeptId && deptQBs.length > 0 && (
+                        <div className="form-group">
+                            <label className="form-label">Select from Department Question Banks</label>
+                            <select value={selectedQBId} onChange={e => { setSelectedQBId(e.target.value); if (e.target.value) setQuestions(''); }}>
+                                <option value="">— Select a question bank —</option>
+                                {deptQBs.map(qb => <option key={qb.id} value={qb.id}>{qb.label} ({qb.file_name})</option>)}
+                            </select>
                         </div>
-                        <input
-                            type="file"
-                            id="qbFile"
-                            style={{ display: 'none' }}
-                            accept=".txt"
-                            onChange={e => {
-                                const f = e.target.files?.[0];
-                                if (f) void handleQuestionBankFile(f);
-                            }}
-                        />
-                    </div>
-                    <div className="form-group">
-                        <label className="form-label">Or type questions manually <span className="optional">(one per line)</span></label>
-                        <textarea rows={7} value={questions} onChange={e => setQuestions(e.target.value)}
-                            placeholder={"What is the time complexity of merge sort?\nExplain SOLID principles.\nCODING: Write a binary search."} />
-                        <p className="form-hint">Prefix with CODING: to trigger the code editor automatically</p>
-                    </div>
+                    )}
+                    {selectedDeptId && deptQBs.length === 0 && (
+                        <Alert type="info">No question banks uploaded for this department yet. You can upload below or type manually.</Alert>
+                    )}
+                    {!selectedDeptId && (
+                        <Alert type="info">Select a department in Basic Info to pick from pre-uploaded question banks, or upload/type below.</Alert>
+                    )}
+                    {!selectedQBId && (
+                        <>
+                            <hr className="divider" />
+                            <Alert type="info">
+                                AI will use these questions in order. Leave empty to let AI generate based on the job role.
+                            </Alert>
+                            <div className="form-group" style={{ marginTop: 12 }}>
+                                <label className="form-label">Upload Question Bank <span className="optional">(TXT / CSV — one question per line)</span></label>
+                                <div className="file-drop" onClick={() => document.getElementById('qbFile')?.click()}>
+                                    <i className="fas fa-file-lines" style={{ fontSize: 28, color: '#4F46E5' }} />
+                                    <div style={{ fontSize: 13 }}>{qbLabel}</div>
+                                    <p className="form-hint" style={{ marginTop: 6 }}>Each line becomes a question. Prefix with CODING: for coding questions.</p>
+                                </div>
+                                <input
+                                    type="file"
+                                    id="qbFile"
+                                    style={{ display: 'none' }}
+                                    accept=".txt,.csv"
+                                    onChange={e => {
+                                        const f = e.target.files?.[0];
+                                        if (f) void handleQuestionBankFile(f);
+                                    }}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label">Or type questions manually <span className="optional">(one per line)</span></label>
+                                <textarea rows={7} value={questions} onChange={e => setQuestions(e.target.value)}
+                                    placeholder={"What is the time complexity of merge sort?\nExplain SOLID principles.\nCODING: Write a binary search."} />
+                                <p className="form-hint">Prefix with CODING: to trigger the code editor automatically</p>
+                            </div>
+                        </>
+                    )}
                 </>
             )}
 
@@ -220,10 +292,17 @@ export function ScheduleModal({ open, onClose, onSuccess }: ScheduleModalProps) 
                     </div>
                     <hr className="divider" />
                     <div className="form-group">
-                        <label className="form-label">Assign Interviewers <span className="optional">(from your organisation)</span></label>
+                        <label className="form-label">
+                            Assign Interviewers
+                            <span className="optional">
+                                {selectedDeptId ? ' (from selected department)' : ' (from your organisation)'}
+                            </span>
+                        </label>
                         <div className="check-list">
                             {interviewers.length === 0
-                                ? <p className="text-muted text-sm" style={{ padding: 8 }}>No interviewers found in your organisation</p>
+                                ? <p className="text-muted text-sm" style={{ padding: 8 }}>
+                                    {selectedDeptId ? 'No interviewers found in the selected department' : 'No interviewers found in your organisation'}
+                                </p>
                                 : interviewers.map(u => (
                                     <div key={u.id} className="check-item">
                                         <input type="checkbox" id={`iv_${u.id}`}

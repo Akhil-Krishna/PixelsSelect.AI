@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import Boolean, DateTime, Enum as SAEnum, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, Enum as SAEnum, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -36,6 +36,10 @@ class Organisation(Base):
     )
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     domain: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Verification & plan
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    plan: Mapped[str] = mapped_column(String, default="free", nullable=False)
+    logo_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
@@ -58,13 +62,22 @@ class User(Base):
         String, unique=True, index=True, nullable=False
     )
     full_name: Mapped[str] = mapped_column(String, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String, nullable=False)
+    hashed_password: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     role: Mapped[UserRole] = mapped_column(
         SAEnum(UserRole, name="userrole"),
         nullable=False,
         default=UserRole.CANDIDATE,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Verification & auth tracking
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auth_provider: Mapped[str] = mapped_column(String, default="local", nullable=False)
+    invited_by: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    last_login: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
@@ -74,6 +87,13 @@ class User(Base):
     )
     organisation: Mapped[Optional["Organisation"]] = relationship(
         "Organisation", back_populates="members"
+    )
+
+    department_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("departments.id"), nullable=True, index=True
+    )
+    department: Mapped[Optional["Department"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "Department", foreign_keys=[department_id]
     )
 
     # Relationships

@@ -7,19 +7,15 @@ export function useAuth() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        const token = localStorage.getItem('token');
-        if (token) {
-            apiCall<User>('GET', '/users/me')
-                .then(u => { setCurrentUser(u); setLoading(false); })
-                .catch(() => { localStorage.removeItem('token'); setLoading(false); });
-        } else {
-            setLoading(false);
-        }
+        // Auth is fully cookie-based — no localStorage token needed.
+        // The httpOnly cookie is sent automatically with credentials: 'include'.
+        apiCall<User>('GET', '/users/me')
+            .then(u => { setCurrentUser(u); setLoading(false); })
+            .catch(() => { setLoading(false); });
     }, []);
 
     const logout = async () => {
         await apiCall('POST', '/auth/logout').catch(() => { });
-        localStorage.removeItem('token');
         setCurrentUser(null);
     };
 

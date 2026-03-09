@@ -12,28 +12,35 @@ import { Topbar } from '../components/layout/Topbar';
 
 // Auth
 import { LoginForm } from '../components/auth/LoginForm';
-import { RegisterForm } from '../components/auth/RegisterForm';
+import { OrgRegisterForm } from '../components/auth/RegisterForm';
+import { ForgotPasswordForm } from '../components/auth/ForgotPasswordForm';
 
 // Dashboard
 import { StatsRow } from '../components/dashboard/StatsRow';
 import { InterviewTable } from '../components/dashboard/InterviewTable';
+import { DepartmentPanel } from '../components/dashboard/DepartmentPanel';
 
 // Modals
 import { ScheduleModal } from '../components/modals/ScheduleModal';
 import { AddUserModal } from '../components/modals/AddUserModal';
 import { DetailModal } from '../components/modals/DetailModal';
-import { TempPasswordModal } from '../components/modals/TempPasswordModal';
 
 // UI
 import { ToastContainer } from '../components/ui/Toast';
 import { RoleBadge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 
-type AppPage = 'Dashboard' | 'Interviews' | 'Users';
+type AppPage = 'Dashboard' | 'Interviews' | 'Upcoming' | 'Departments' | 'Users';
 
 // ── Auth Page ──────────────────────────────────────────────────────────────────
-function AuthPage({ onSuccess }: { onSuccess: (user: User, token: string) => void }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+function AuthPage({ onSuccess }: { onSuccess: (user: User) => void }) {
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
+
+  const headings: Record<typeof mode, string> = {
+    login: 'Welcome back',
+    register: 'Register Organisation',
+    forgot: 'Forgot Password',
+  };
 
   return (
     <div className="auth-wrap">
@@ -41,18 +48,24 @@ function AuthPage({ onSuccess }: { onSuccess: (user: User, token: string) => voi
         <div className="auth-logo">
           <div className="auth-logo-icon">🤖</div>
           <div className="auth-title">PixelsSelect.AI</div>
-          <div className="auth-sub">ZeroPixels Interview Platform</div>
+          <div className="auth-sub">{headings[mode]}</div>
         </div>
 
-        {mode === 'login' ? (
+        {mode === 'login' && (
           <LoginForm
             onSuccess={onSuccess}
             onSwitchToRegister={() => setMode('register')}
+            onForgotPassword={() => setMode('forgot')}
           />
-        ) : (
-          <RegisterForm
-            onSuccess={onSuccess}
+        )}
+        {mode === 'register' && (
+          <OrgRegisterForm
             onSwitchToLogin={() => setMode('login')}
+          />
+        )}
+        {mode === 'forgot' && (
+          <ForgotPasswordForm
+            onBack={() => setMode('login')}
           />
         )}
       </div>
@@ -160,7 +173,6 @@ export default function HomePage() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [showAddUserForUsers, setShowAddUserForUsers] = useState(false);
-  const [tempCreds, setTempCreds] = useState<{ email: string; pwd: string } | null>(null);
 
   const loadInterviews = useCallback(async () => {
     try {
@@ -173,18 +185,15 @@ export default function HomePage() {
     if (currentUser) loadInterviews();
   }, [currentUser, loadInterviews]);
 
-  const handleAuthSuccess = (user: User, token: string) => {
-    localStorage.setItem('token', token);
+  const handleAuthSuccess = (user: User) => {
+    // Token is stored in httpOnly cookie by the server.
+    // No localStorage needed.
     setCurrentUser(user);
   };
 
-  const handleScheduleSuccess = (tempPwd?: string, email?: string) => {
+  const handleScheduleSuccess = () => {
     loadInterviews();
-    if (tempPwd && email) {
-      setTempCreds({ email, pwd: tempPwd });
-    } else {
-      toast('Interview scheduled and invite sent!');
-    }
+    toast('Interview scheduled and invite sent!');
   };
 
   const handleCancel = async (id: string) => {
@@ -304,6 +313,35 @@ export default function HomePage() {
             </div>
           )}
 
+          {/* ── Upcoming ── */}
+          {page === 'Upcoming' && (() => {
+            const upcoming = interviews
+              .filter(i => i.status === 'scheduled' || i.status === 'in_progress')
+              .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
+            return (
+              <div className="card">
+                <div className="card-header">
+                  <div>
+                    <div className="card-title">Upcoming Interviews</div>
+                    <div className="card-subtitle">{upcoming.length} scheduled</div>
+                  </div>
+                  {isAdminOrHR && (
+                    <Button variant="primary" size="sm" icon="fa-plus" onClick={() => setShowSchedule(true)}>
+                      Schedule Interview
+                    </Button>
+                  )}
+                </div>
+                <InterviewTable
+                  interviews={upcoming}
+                  currentUser={currentUser}
+                  onViewDetail={handleViewDetail}
+                  onCancel={handleCancel}
+                  emptyMessage="No upcoming interviews. All caught up!"
+                />
+              </div>
+            );
+          })()}
+
           {/* ── Users ── */}
           {page === 'Users' && (
             <div className="card">
@@ -314,6 +352,19 @@ export default function HomePage() {
                 </Button>
               </div>
               <UsersPage onAddUser={() => setShowAddUserForUsers(true)} />
+            </div>
+          )}
+
+          {/* ── Departments ── */}
+          {page === 'Departments' && (
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">Department Management</div>
+                  <div className="card-subtitle">Create departments and manage question banks</div>
+                </div>
+              </div>
+              <DepartmentPanel />
             </div>
           )}
         </div>
@@ -338,13 +389,6 @@ export default function HomePage() {
         onClose={() => setDetailIv(null)}
       />
 
-      {tempCreds && (
-        <TempPasswordModal
-          email={tempCreds.email}
-          password={tempCreds.pwd}
-          onClose={() => setTempCreds(null)}
-        />
-      )}
 
       {/* ── Toasts ── */}
       <ToastContainer toasts={toasts} onDismiss={dismiss} />

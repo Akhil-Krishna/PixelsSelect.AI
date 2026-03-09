@@ -1,9 +1,11 @@
 """
-JWT creation/verification and bcrypt password hashing.
+JWT creation/verification, bcrypt password hashing, and secure token utilities.
 """
+import hashlib
+import secrets
 import warnings
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -50,6 +52,25 @@ class SecurityService:
             )
         except JWTError:
             return None
+
+
+# ── Secure single-use token utilities ─────────────────────────────────────────
+
+def generate_token() -> Tuple[str, str]:
+    """
+    Return (raw_token, token_hash).
+
+    raw_token  — sent in the email link, never stored.
+    token_hash — SHA-256 hex digest stored in the database.
+    """
+    raw = secrets.token_urlsafe(48)
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    return raw, digest
+
+
+def hash_token(raw: str) -> str:
+    """SHA-256 hex digest of a raw token string."""
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 # ── Convenience singletons ─────────────────────────────────────────────────────

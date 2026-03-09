@@ -2,23 +2,27 @@
 Interview session — candidate chat, AI controls, live metrics, completion.
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
+from app.core.security import SecurityService
 from app.models.interview import (
     Interview, InterviewInterviewer, InterviewMessage, InterviewStatus, VisionLog,
 )
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas import (
-    ChatMessage, ChatResponse, CompleteInterviewRequest, EvaluationResult,
-    InterviewWithInterviewers, InterviewerQuestion, MessageOut, ScoreBreakdown,
+    CandidateVerifyRequest, ChatMessage, ChatResponse, CompleteInterviewRequest,
+    EvaluationResult, InterviewWithInterviewers, InterviewerQuestion,
+    MessageOut, ScoreBreakdown,
 )
 from app.services.access_policy import AccessPolicy
 from app.services.interview_orchestrator import (
@@ -28,6 +32,8 @@ from app.services.vision_service import aggregate_vision_logs
 
 router = APIRouter(prefix="/interview-session", tags=["interview-session"])
 logger = logging.getLogger(__name__)
+
+_CANDIDATE_TOKEN_MINUTES = 120  # 2-hour session for candidate
 
 
 async def _get_iv(token: str, db: AsyncSession) -> Interview:
@@ -47,6 +53,92 @@ async def _get_iv(token: str, db: AsyncSession) -> Interview:
     if not iv:
         raise HTTPException(404, "Interview not found")
     return iv
+
+
+# ── Candidate magic-link verification (public — no JWT required) ─────────────
+
+@router.post("/verify-candidate/{interview_token}")
+async def verify_candidate(
+    interview_token: str,
+    body: CandidateVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Public endpoint for candidates arriving via magic link.
+    Validates email + name, checks interview time window, issues JWT cookie.
+    """
+    iv = await _get_iv(interview_token, db)
+
+    if iv.status == InterviewStatus.CANCELLED:
+        raise HTTPException(400, "This interview has been cancelled.")
+    if iv.status == InterviewStatus.COMPLETED:
+        raise HTTPException(400, "This interview has already been completed.")
+
+    # 1. Verify candidate identity — email must match (case-insensitive)
+    candidate = iv.candidate
+    if not candidate or candidate.email.lower() != body.email.strip().lower():
+        raise HTTPException(403, "Email does not match the interview invitation.")
+
+    # 2. Check time window (reuse same settings as AccessPolicy)
+    now = datetime.now(timezone.utc)
+    scheduled = iv.scheduled_at
+    if scheduled.tzinfo is None:
+        scheduled = scheduled.replace(tzinfo=timezone.utc)
+    else:
+        scheduled = scheduled.astimezone(timezone.utc)
+
+    earliest = scheduled - timedelta(seconds=max(0, int(settings.INTERVIEW_JOIN_EARLY_SECONDS)))
+    latest = scheduled + timedelta(seconds=max(0, int(settings.INTERVIEW_JOIN_LATE_SECONDS)))
+
+    if now < earliest:
+        early_mins = int(settings.INTERVIEW_JOIN_EARLY_SECONDS) // 60
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "early",
+                "message": f"Interview starts at {scheduled.isoformat()}. "
+                           f"Please come back {early_mins} minutes before.",
+                "scheduled_at": scheduled.isoformat(),
+            },
+        )
+    if now > latest:
+        return JSONResponse(
+            status_code=200,
+            content={"status": "expired", "message": "The interview window has closed."},
+        )
+
+    # 3. Update candidate info
+    if body.name.strip() and body.name.strip() != candidate.full_name:
+        candidate.full_name = body.name.strip()
+    candidate.is_verified = True
+    await db.flush()
+    await db.commit()
+
+    # 4. Issue JWT cookie
+    token = SecurityService.create_access_token(
+        data={"sub": candidate.id},
+        expires_delta=timedelta(minutes=_CANDIDATE_TOKEN_MINUTES),
+    )
+
+    response = JSONResponse(
+        status_code=200,
+        content={
+            "status": "ok",
+            "message": "Verified. Redirecting to interview.",
+            "interview_id": iv.id,
+            "access_token": interview_token,
+        },
+    )
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        max_age=_CANDIDATE_TOKEN_MINUTES * 60,
+        path="/",
+        samesite="lax",
+        secure=not settings.DEBUG,
+    )
+    return response
 
 
 @router.get("/join/{interview_token}", response_model=InterviewWithInterviewers)

@@ -18,6 +18,8 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
     { icon: 'fa-gauge', label: 'Dashboard', roles: null },
     { icon: 'fa-calendar-check', label: 'Interviews', roles: null },
+    { icon: 'fa-clock', label: 'Upcoming', roles: null },
+    { icon: 'fa-building', label: 'Departments', roles: ['admin'] },
     { icon: 'fa-users', label: 'Users', roles: ['admin'] },
 ];
 

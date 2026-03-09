@@ -3,7 +3,6 @@ Interview lifecycle endpoints — schedule, list, get, cancel, upload resume.
 """
 import base64
 import logging
-import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -18,6 +17,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user, require_hr
 from app.core.security import get_password_hash
 from app.core.task_runner import enqueue_task_with_fallback, run_task_with_fallback
+from app.models.department import Department, DepartmentQuestionBank
 from app.models.interview import Interview, InterviewInterviewer, InterviewStatus
 from app.models.user import User, UserRole
 from app.schemas import InterviewCreate, InterviewWithInterviewers
@@ -60,10 +60,9 @@ async def _load_interview(interview_id: str, db: AsyncSession) -> Interview:
     return iv
 
 
-def _to_schema(iv: Interview, temp_password: Optional[str] = None) -> InterviewWithInterviewers:
+def _to_schema(iv: Interview) -> InterviewWithInterviewers:
     obj = InterviewWithInterviewers.model_validate(iv)  # type: ignore[arg-type]
     obj.has_recording = bool(iv.recording_url)
-    obj.temp_password = temp_password
     return obj
 
 
@@ -87,23 +86,45 @@ async def schedule_interview(
     if cached:
         return InterviewWithInterviewers.model_validate(cached)
 
-    # Candidate lookup / auto-create
+    # Candidate lookup / create placeholder (no registration required)
     res = await db.execute(select(User).where(User.email == payload.candidate_email))
     candidate = res.scalar_one_or_none()
-    temp_password = None
 
     if not candidate:
-        temp_password = secrets.token_urlsafe(8)
         candidate = User(
             email=payload.candidate_email,
             full_name=payload.candidate_email.split("@")[0].replace(".", " ").title(),
-            hashed_password=get_password_hash(temp_password),
+            hashed_password="",               # placeholder — no login password
             role=UserRole.CANDIDATE,
+            auth_provider="magic_link",
+            is_verified=False,
         )
         db.add(candidate)
         await db.flush()
     elif candidate.role != UserRole.CANDIDATE:
         raise HTTPException(400, "Candidate email belongs to a non-candidate account")
+
+    # Resolve question_bank from department QB if specified
+    question_bank_data = payload.question_bank
+    if payload.question_bank_id:
+        qb_result = await db.execute(
+            select(DepartmentQuestionBank)
+            .options(selectinload(DepartmentQuestionBank.department))
+            .where(DepartmentQuestionBank.id == payload.question_bank_id)
+        )
+        qb = qb_result.scalar_one_or_none()
+        if not qb or qb.department.organisation_id != current_user.organisation_id:
+            raise HTTPException(400, "Question bank not found in your organisation.")
+        if payload.department_id and qb.department_id != payload.department_id:
+            raise HTTPException(400, "Question bank does not belong to the selected department.")
+        question_bank_data = qb.questions
+
+    # Validate department belongs to org
+    if payload.department_id:
+        dept_result = await db.execute(select(Department).where(Department.id == payload.department_id))
+        dept = dept_result.scalar_one_or_none()
+        if not dept or dept.organisation_id != current_user.organisation_id:
+            raise HTTPException(400, "Department does not belong to your organisation.")
 
     interview = Interview(
         title=payload.title,
@@ -112,11 +133,12 @@ async def schedule_interview(
         hr_id=current_user.id,
         candidate_id=candidate.id,
         organisation_id=current_user.organisation_id,
+        department_id=payload.department_id,
         scheduled_at=payload.scheduled_at,
         duration_minutes=payload.duration_minutes,
         enable_emotion_analysis=payload.enable_emotion_analysis,
         enable_cheating_detection=payload.enable_cheating_detection,
-        question_bank=payload.question_bank,
+        question_bank=question_bank_data,
     )
     db.add(interview)
     await db.flush()
@@ -160,7 +182,6 @@ async def schedule_interview(
         "candidate_name": candidate.full_name,
         "interview_title": interview.title,
         "scheduled_at": interview.scheduled_at.isoformat(),
-        "temp_password": temp_password,
     }
     background_tasks.add_task(
         enqueue_task_with_fallback,
@@ -195,21 +216,24 @@ async def schedule_interview(
                 lambda p=link_payload: send_interview_link_sync(**p),
             )
     else:
+        # Without Celery we cannot schedule a delayed task, so send immediately.
+        # Log a note if it's early, but still deliver the link so candidates
+        # always receive it.
         now = datetime.now(timezone.utc)
-        if reminder_eta <= now:
-            background_tasks.add_task(
-                enqueue_task_with_fallback,
-                send_interview_link_task,
-                link_payload,
-                lambda p=link_payload: send_interview_link_sync(**p),
+        if reminder_eta > now:
+            logger.info(
+                "Celery disabled — sending interview-link email immediately "
+                "(would have been scheduled for %s)", reminder_eta.isoformat(),
             )
-        else:
-            logger.warning(
-                "Skipping delayed interview-link reminder because Celery background scheduling is disabled"
-            )
+        background_tasks.add_task(
+            enqueue_task_with_fallback,
+            send_interview_link_task,
+            link_payload,
+            lambda p=link_payload: send_interview_link_sync(**p),
+        )
 
     loaded = await _load_interview(interview.id, db)
-    result_schema = _to_schema(loaded, temp_password)
+    result_schema = _to_schema(loaded)
     await store_idempotency_response(db, idem_record, result_schema.model_dump(mode="json"))  # type: ignore[arg-type]
     return result_schema
 
@@ -220,8 +244,12 @@ async def list_interviews(
     current_user: User = Depends(get_current_user),
 ):
     if current_user.role == UserRole.ADMIN:
-        query = select(Interview)
+        # Admin sees all interviews in their own organisation only
+        query = select(Interview).where(
+            Interview.organisation_id == current_user.organisation_id
+        )
     elif current_user.role == UserRole.HR:
+        # HR sees all interviews scheduled by any HR in their organisation
         query = (
             select(Interview)
             .join(Interview.hr)
@@ -230,10 +258,23 @@ async def list_interviews(
     elif current_user.role == UserRole.CANDIDATE:
         query = select(Interview).where(Interview.candidate_id == current_user.id)
     elif current_user.role == UserRole.INTERVIEWER:
-        subq = select(InterviewInterviewer.interview_id).where(
+        # Interviewer sees:
+        # 1) All interviews assigned to them
+        # 2) All interviews in their department (for report viewing)
+        assigned_subq = select(InterviewInterviewer.interview_id).where(
             InterviewInterviewer.interviewer_id == current_user.id
         )
-        query = select(Interview).where(Interview.id.in_(subq))
+        conditions = [Interview.id.in_(assigned_subq)]
+        if current_user.department_id:
+            conditions.append(Interview.department_id == current_user.department_id)
+        query = select(Interview).where(
+            Interview.organisation_id == current_user.organisation_id,
+            # Union: assigned OR same department
+        ).filter(
+            Interview.id.in_(assigned_subq) | (
+                Interview.department_id == current_user.department_id
+            ) if current_user.department_id else Interview.id.in_(assigned_subq)
+        )
     else:
         raise HTTPException(403, "Access denied")
 

@@ -59,7 +59,7 @@ async def init_db() -> None:
     In production prefer Alembic migrations; this is kept for convenience.
     """
     # Import models so their metadata is attached to Base before create_all.
-    from app.models import user, interview, idempotency  # noqa: F401
+    from app.models import user, interview, idempotency, invitation, password_reset, department  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -15,20 +15,78 @@ from app.models.user import UserRole
 from app.models.interview import InterviewStatus
 
 
-# ─── Auth ─────────────────────────────────────────────────────────────────────
+# ─── Auth ──────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: UserOut
+class OrgRegisterRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=100)
+    domain: Optional[str] = None            # e.g. "techcorp.com"
+    admin_email: EmailStr
+    admin_name: str = Field(..., min_length=2, max_length=100)
+    password: str = Field(..., min_length=8)
 
 
-# ─── Organisation ─────────────────────────────────────────────────────────────
+class EmailVerifyRequest(BaseModel):
+    token: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8)
+
+
+class CandidateVerifyRequest(BaseModel):
+    """Candidate identity verification before interview entry."""
+    email: EmailStr
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class CandidateRegisterRequest(BaseModel):
+    """Optional post-interview account creation."""
+    password: str = Field(..., min_length=8)
+
+
+# ─── Department ──────────────────────────────────────────────────────────────
+
+class DepartmentCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    lead_id: Optional[str] = None
+
+
+class DepartmentOut(BaseModel):
+    id: str
+    name: str
+    organisation_id: str
+    lead_id: Optional[str] = None
+    lead_name: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class QuestionBankOut(BaseModel):
+    id: str
+    department_id: str
+    label: str
+    file_name: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class QuestionBankDetail(QuestionBankOut):
+    questions: Optional[Any] = None
+
+
+# ─── Organisation ──────────────────────────────────────────────────────────────
 
 class OrgCreate(BaseModel):
     name: str
@@ -39,12 +97,14 @@ class OrgOut(BaseModel):
     id: str
     name: str
     domain: Optional[str] = None
+    is_verified: bool = False
+    plan: str = "free"
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
-# ─── User ─────────────────────────────────────────────────────────────────────
+# ─── User ─────────────────────────────────────────────────────────────────────────────
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -52,6 +112,7 @@ class UserCreate(BaseModel):
     password: str
     role: UserRole = UserRole.CANDIDATE
     organisation_id: Optional[str] = None
+    department_id: Optional[str] = None
 
 
 class UserOut(BaseModel):
@@ -60,9 +121,13 @@ class UserOut(BaseModel):
     full_name: str
     role: UserRole
     is_active: bool
+    is_verified: bool = False
+    last_login: Optional[datetime] = None
     created_at: datetime
     organisation_id: Optional[str] = None
     organisation: Optional[OrgOut] = None
+    department_id: Optional[str] = None
+    department_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -70,6 +135,45 @@ class UserOut(BaseModel):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
+
+
+# Now that all dependent models are defined, define Token and OrgRegisterOut
+# which reference both UserOut and OrgOut.
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+class OrgRegisterOut(BaseModel):
+    organisation: OrgOut
+    user: UserOut
+    message: str = "Verification email sent. Please check your inbox."
+
+
+# ─── Invitation ──────────────────────────────────────────────────────────────────────
+
+class InvitationCreate(BaseModel):
+    email: EmailStr
+    role: UserRole
+
+
+class InvitationOut(BaseModel):
+    id: str
+    email: str
+    role: UserRole
+    org_name: str
+    org_id: str
+    expires_at: datetime
+    accepted: bool
+
+    model_config = {"from_attributes": True}
+
+
+class InvitationAccept(BaseModel):
+    token: str
+    full_name: str = Field(..., min_length=2, max_length=100)
+    password: str = Field(..., min_length=8)
 
 
 # ─── Interview ────────────────────────────────────────────────────────────────
@@ -85,6 +189,8 @@ class InterviewCreate(BaseModel):
     enable_emotion_analysis: bool = True
     enable_cheating_detection: bool = True
     question_bank: Optional[List[dict]] = None
+    department_id: Optional[str] = None
+    question_bank_id: Optional[str] = None
 
 
 class InterviewOut(BaseModel):
@@ -95,6 +201,7 @@ class InterviewOut(BaseModel):
     hr_id: str
     candidate_id: str
     organisation_id: Optional[str] = None
+    department_id: Optional[str] = None
     scheduled_at: datetime
     duration_minutes: int
     status: InterviewStatus
@@ -133,7 +240,7 @@ class InterviewerOut(BaseModel):
 
 class InterviewWithInterviewers(InterviewOut):
     interviewers: List[InterviewerOut] = Field(default_factory=list)
-    temp_password: Optional[str] = None  # Only set when a new candidate is auto-created
+    has_recording: bool = False
 
     model_config = {"from_attributes": True}
 

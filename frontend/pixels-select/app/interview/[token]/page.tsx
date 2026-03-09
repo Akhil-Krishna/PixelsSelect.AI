@@ -38,6 +38,16 @@ export default function InterviewPage() {
     const [startLoading, setStartLoading] = useState(false);
     const [startError, setStartError] = useState('');
 
+    // ── Candidate verification (magic-link flow) ──────────────────────────────
+    const [needsVerify, setNeedsVerify] = useState(false);
+    const [verifyEmail, setVerifyEmail] = useState('');
+    const [verifyName, setVerifyName] = useState('');
+    const [verifyError, setVerifyError] = useState('');
+    const [verifyStatus, setVerifyStatus] = useState<'idle' | 'early' | 'expired' | 'ok'>('idle');
+    const [verifyScheduledAt, setVerifyScheduledAt] = useState('');
+    const [verifyLoading, setVerifyLoading] = useState(false);
+    const [verifiedViaMagicLink, setVerifiedViaMagicLink] = useState(false);
+
     // ── Messages ───────────────────────────────────────────────────────────────
     const [messages, setMessages] = useState<Message[]>([]);
 
@@ -160,11 +170,11 @@ export default function InterviewPage() {
 
     const ensureRecordingAudioGraph = useCallback(() => {
         if (!recordingAudioCtxRef.current || recordingAudioCtxRef.current.state === 'closed') {
-            const win = window as Window & { webkitAudioContext?: typeof AudioContext };
+            const win = window as Window & { webkitAudioContext?: typeof AudioContext; AudioContext?: typeof AudioContext };
             const AudioContextClass = win.AudioContext || win.webkitAudioContext;
             if (!AudioContextClass) return { ctx: null, dest: null };
             recordingAudioCtxRef.current = new AudioContextClass();
-            recordingAudioDestRef.current = recordingAudioCtxRef.current.createMediaStreamDestination();
+            recordingAudioDestRef.current = recordingAudioCtxRef.current!.createMediaStreamDestination();
         }
         const ctx = recordingAudioCtxRef.current;
         if (ctx?.state === 'suspended') {
@@ -261,7 +271,7 @@ export default function InterviewPage() {
 
     // ── STT (Whisper) ─────────────────────────────────────────────────────────
     const startListening = useCallback(() => {
-        console.log("startListening called. isListeningRef:", isListeningRef.current, "camStream:", !!camStream.current, "isTtsSpeaking:", isTtsSpeaking.current);
+
 
         if (manualSendRequiredRef.current) {
             setSttStatus('Coding mode: voice paused');
@@ -277,7 +287,7 @@ export default function InterviewPage() {
         }
 
         if (isListeningRef.current || !camStream.current || isTtsSpeaking.current) {
-            console.log("startListening aborted early.");
+
             if (isTtsSpeaking.current) setSttStatus('AI speaking...');
             return;
         }
@@ -291,7 +301,7 @@ export default function InterviewPage() {
         }
 
         try {
-            console.log("Initializing MediaRecorder for STT...");
+
             const audio = new MediaStream(audioTracks);
             const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg', 'audio/mp4']
                 .find(m => MediaRecorder.isTypeSupported(m)) || '';
@@ -301,11 +311,11 @@ export default function InterviewPage() {
             whisperRecorder.current.onstop = async () => {
                 // Clear max-listen safety timer
                 if (maxListenTimerRef.current) { clearTimeout(maxListenTimerRef.current); maxListenTimerRef.current = null; }
-                console.log("whisperRecorder stopped.");
+
                 const chunks = whisperChunks.current.splice(0);
                 if (!chunks.length || doneRef.current) return;
                 const blob = new Blob(chunks, { type: mime || 'audio/webm' });
-                console.log("STT segment blob size:", blob.size);
+
                 if (blob.size < 200) {
                     // Audio too short/silent — retry listening unless TTS is speaking
                     if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current && !awaitingAiReplyRef.current) {
@@ -315,13 +325,12 @@ export default function InterviewPage() {
                 }
                 try {
                     const fd = new FormData(); fd.append('audio', blob, 'stt.webm');
-                    const t = localStorage.getItem('token');
-                    console.log("Sending STT segment to backend...");
+
                     const res = await fetch(`${API_BASE}/stt/transcribe`, {
-                        method: 'POST', headers: { Authorization: `Bearer ${t}` }, body: fd, credentials: 'include',
+                        method: 'POST', body: fd, credentials: 'include',
                     });
                     const d = await res.json().catch(() => ({}));
-                    console.log("STT response from backend:", d);
+
                     if (d.text?.trim()) {
                         const text = d.text.trim();
                         if (manualSendRequiredRef.current) {
@@ -338,7 +347,7 @@ export default function InterviewPage() {
                         awaitingAiReplyRef.current = true;
                         sendMessageRef.current?.(text);
                     } else {
-                        console.log("STT text empty — retrying listen.");
+
                         if (!isTtsSpeaking.current && voiceOnRef.current && !doneRef.current && !awaitingAiReplyRef.current) {
                             setTimeout(() => { if (!isTtsSpeaking.current) startListening(); }, 500);
                         } else {
@@ -354,11 +363,11 @@ export default function InterviewPage() {
             isListeningRef.current = true;
             setIsListening(true);
             setSttStatus('🎤 Listening…');
-            console.log("Listening interface activated!");
+
 
             // Safety: stop listening after 30s max to avoid infinite silent recording
             maxListenTimerRef.current = setTimeout(() => {
-                console.log("Max listen timeout (30s) reached. Stopping.");
+
                 if (isListeningRef.current) stopListening();
             }, 30000);
 
@@ -385,7 +394,7 @@ export default function InterviewPage() {
                 // If no speech at all within 8s, stop and retry
                 const silenceOnlyTimeout = setTimeout(() => {
                     if (!speaking && isListeningRef.current) {
-                        console.log("VAD: No speech detected in 8s. Stopping and retrying.");
+
                         stopListening();
                     }
                 }, 8000);
@@ -399,7 +408,7 @@ export default function InterviewPage() {
                         lastSpeak = Date.now();
                         if (!speaking) { speaking = true; clearTimeout(silenceOnlyTimeout); }
                     } else if (speaking && Date.now() - lastSpeak > 2000) {
-                        console.log("VAD detected 2s of silence after speech. Stopping listening.");
+
                         speaking = false;
                         stopListening();
                         return;
@@ -433,7 +442,7 @@ export default function InterviewPage() {
     // ── TTS ───────────────────────────────────────────────────────────────────
     // speak is defined AFTER startListening so the dep array is valid (no TDZ error)
     const speak = useCallback(async (text: string) => {
-        console.log("TTS Triggered with text:", text);
+
         const synth = window.speechSynthesis;
         ttsSeq.current += 1;
         const seq = ttsSeq.current;
@@ -441,7 +450,7 @@ export default function InterviewPage() {
         stopBackendTtsAudio();
         const clean = text.trim();
         if (!clean || clean.length < 2) {
-            console.log("TTS text too short, proceeding to listen immediately.");
+
             if (pendingAutoListen.current && voiceOnRef.current) {
                 pendingAutoListen.current = false;
                 startListening();
@@ -464,7 +473,7 @@ export default function InterviewPage() {
             const tile = document.getElementById('tile-ai');
             if (tile) tile.style.borderColor = '#334155';
             if (pendingAutoListen.current && voiceOnRef.current) {
-                console.log("Auto-listening triggered from TTS done.");
+
                 pendingAutoListen.current = false;
                 startListening();
             }
@@ -482,16 +491,16 @@ export default function InterviewPage() {
                 utt.lang = 'en-IN'; utt.rate = 0.92; utt.pitch = 1.05;
                 if (voice) utt.voice = voice;
                 utt.onstart = () => {
-                    console.log("TTS onstart fired");
+
                     onSpeakingStart();
                 };
                 const done = () => {
-                    console.log("TTS done/onerror fired");
+
                     onSpeakingDone();
                 };
                 utt.onend = done; utt.onerror = done;
                 (window as any)._currUtt = utt; // Anti-GC hack for Chrome
-                console.log("TTS calling synth.speak");
+
                 synth.speak(utt);
             };
 
@@ -501,7 +510,7 @@ export default function InterviewPage() {
                 const handler = () => {
                     if (fired) return;
                     fired = true;
-                    console.log("Voices loaded lazily");
+
                     const v = synth.getVoices();
                     doSpeak(v.find(x => x.lang === 'en-IN') || v.find(x => x.lang.startsWith('en')) || null);
                 };
@@ -517,19 +526,15 @@ export default function InterviewPage() {
                     }
                 }, 600);
             } else {
-                console.log("Voices already loaded");
+
                 doSpeak(voices.find(x => x.lang === 'en-IN') || voices.find(x => x.lang.startsWith('en')) || null);
             }
         };
 
         try {
-            const token = localStorage.getItem('token');
             const res = await fetch(`${API_BASE}/tts/synthesize`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                },
+                headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({ text: clean }),
             });
@@ -621,9 +626,8 @@ export default function InterviewPage() {
                 await new Promise(r => { recorder.current!.onstop = r as () => void; setTimeout(r, 2500); });
                 const blob = new Blob(recChunks.current, { type: recordingMime.current || 'video/webm' });
                 const fd = new FormData(); fd.append('file', blob, 'recording.webm');
-                const t = localStorage.getItem('token');
                 await fetch(`${API_BASE}/recordings/upload/${token}`, {
-                    method: 'POST', headers: { Authorization: `Bearer ${t}` }, body: fd, credentials: 'include',
+                    method: 'POST', body: fd, credentials: 'include',
                 });
             }
             const result = await apiCall<{
@@ -817,40 +821,55 @@ export default function InterviewPage() {
     };
 
     // ── Boot ──────────────────────────────────────────────────────────────────
+    const loadSession = useCallback(async () => {
+        try {
+            const data = await apiCall<InterviewSession>('GET', `/interview-session/join/${token}`);
+            setSession(data);
+            setNeedsVerify(false);
+
+            // If already completed — jump straight to the results overlay
+            if ((data.status as string).toLowerCase() === 'completed') {
+                setCompleted(true);
+                setStarted(true);
+                setCompletedData({
+                    title: 'Interview Complete!',
+                    sub: data.ai_feedback ? 'Your results are below.' : 'Results have been processed.',
+                    scores: [
+                        { label: 'Q&A Score', val: data.answer_score ?? 0, color: '#4F46E5' },
+                        { label: 'Code Score', val: data.code_score ?? 0, color: '#10B981' },
+                        { label: 'Confidence', val: data.emotion_score ?? 0, color: '#F59E0B' },
+                        { label: 'Integrity', val: data.integrity_score ?? 0, color: '#EF4444' },
+                    ],
+                });
+                return;
+            }
+
+            // Camera setup
+            navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true })
+                .then(async (s) => {
+                    camStream.current = s;
+                    setLocalStream(s);
+                    if (previewVideoRef.current) previewVideoRef.current.srcObject = s;
+                    // Fetch JWT for WebSocket auth (cookies don't work cross-origin for WS)
+                    try {
+                        const wt = await apiCall<{ token: string }>('GET', '/auth/ws-token');
+                        if (wt?.token) setJwtToken(wt.token);
+                    } catch { /* WebRTC will be unavailable */ }
+                })
+                .catch(() => { });
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            // 401 = not authenticated → show verification form (magic-link flow)
+            if (msg.includes('Not authenticated') || msg.includes('401')) {
+                setNeedsVerify(true);
+            } else {
+                setLoadError(msg);
+            }
+        }
+    }, [token]);
+
     useEffect(() => {
-        if (!localStorage.getItem('token')) { window.location.href = '/'; return; }
-        apiCall<InterviewSession>('GET', `/interview-session/join/${token}`)
-            .then(data => {
-                setSession(data);
-
-                // If already completed — jump straight to the results overlay
-                if ((data.status as string).toLowerCase() === 'completed') {
-                    setCompleted(true);
-                    setStarted(true); // render the room behind the overlay
-                    setCompletedData({
-                        title: 'Interview Complete!',
-                        sub: data.ai_feedback ? 'Your results are below.' : 'Results have been processed.',
-                        scores: [
-                            { label: 'Q&A Score', val: data.answer_score ?? 0, color: '#4F46E5' },
-                            { label: 'Code Score', val: data.code_score ?? 0, color: '#10B981' },
-                            { label: 'Confidence', val: data.emotion_score ?? 0, color: '#F59E0B' },
-                            { label: 'Integrity', val: data.integrity_score ?? 0, color: '#EF4444' },
-                        ],
-                    });
-                    return;
-                }
-
-                // Camera setup — attach to preview immediately, localVideo attached again after start
-                navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: true })
-                    .then(s => {
-                        camStream.current = s;
-                        setLocalStream(s);                              // ← triggers WebRTC
-                        if (previewVideoRef.current) previewVideoRef.current.srcObject = s;
-                        setJwtToken(localStorage.getItem('token') || '');
-                    })
-                    .catch(() => { });
-            })
-            .catch(e => setLoadError(e.message));
+        loadSession();
 
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
@@ -861,7 +880,49 @@ export default function InterviewPage() {
             stopScreenShare();
             resetRecordingAudioGraph();
         };
-    }, [token, stopBackendTtsAudio, stopScreenShare, resetRecordingAudioGraph]);
+    }, [loadSession, stopBackendTtsAudio, stopScreenShare, resetRecordingAudioGraph]);
+
+    // ── Candidate verification handler ────────────────────────────────────────
+    const handleVerify = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setVerifyError('');
+        setVerifyLoading(true);
+        try {
+            const res = await fetch(`${API_BASE}/interview-session/verify-candidate/${token}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ email: verifyEmail, name: verifyName }),
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                setVerifyError(data.detail || 'Verification failed');
+                return;
+            }
+
+            if (data.status === 'early') {
+                setVerifyStatus('early');
+                setVerifyScheduledAt(data.scheduled_at || '');
+                setVerifyError(data.message);
+                return;
+            }
+            if (data.status === 'expired') {
+                setVerifyStatus('expired');
+                setVerifyError(data.message);
+                return;
+            }
+
+            // status === 'ok' — JWT cookie has been set, reload session
+            setVerifyStatus('ok');
+            setVerifiedViaMagicLink(true);
+            await loadSession();
+        } catch {
+            setVerifyError('Network error. Please try again.');
+        } finally {
+            setVerifyLoading(false);
+        }
+    };
 
     // ── Focus/visibility tracking: tab switches + window/app switches ─────────
     useEffect(() => {
@@ -959,6 +1020,62 @@ export default function InterviewPage() {
         }
     };
 
+    // ── Verification form (magic-link candidates) ────────────────────────────
+    if (needsVerify) {
+        return (
+            <div className="start-ov">
+                <div className="start-card" style={{ textAlign: 'center', maxWidth: 420 }}>
+                    <div style={{ fontSize: 48, marginBottom: 10 }}>🎤</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Verify Your Identity</div>
+                    <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20 }}>
+                        Enter the email and name from your interview invitation.
+                    </div>
+
+                    {verifyStatus === 'early' && verifyScheduledAt && (
+                        <div style={{ background: '#EFF6FF', border: '1px solid #3B82F6', borderRadius: 8, padding: 14, marginBottom: 16, color: '#1E40AF', fontSize: 13 }}>
+                            ⏰ Your interview is scheduled for <strong>{new Date(verifyScheduledAt).toLocaleString()}</strong>.
+                            Please come back closer to the scheduled time.
+                        </div>
+                    )}
+                    {verifyStatus === 'expired' && (
+                        <div style={{ background: '#FEF2F2', border: '1px solid #EF4444', borderRadius: 8, padding: 14, marginBottom: 16, color: '#991B1B', fontSize: 13 }}>
+                            ❌ The interview window has closed. Please contact the recruiter.
+                        </div>
+                    )}
+
+                    <form onSubmit={handleVerify} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        <input
+                            type="email"
+                            placeholder="Your email address"
+                            value={verifyEmail}
+                            onChange={e => setVerifyEmail(e.target.value)}
+                            required
+                            style={{ padding: '10px 14px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14, background: 'var(--bg-card)' }}
+                        />
+                        <input
+                            type="text"
+                            placeholder="Your full name"
+                            value={verifyName}
+                            onChange={e => setVerifyName(e.target.value)}
+                            required
+                            style={{ padding: '10px 14px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14, background: 'var(--bg-card)' }}
+                        />
+                        {verifyError && verifyStatus === 'idle' && (
+                            <div style={{ color: 'var(--danger)', fontSize: 13 }}>{verifyError}</div>
+                        )}
+                        <button
+                            type="submit"
+                            disabled={verifyLoading || verifyStatus === 'expired'}
+                            style={{ padding: '10px 20px', borderRadius: 8, background: 'var(--primary)', color: '#fff', fontWeight: 700, border: 'none', fontSize: 14, cursor: 'pointer', opacity: verifyLoading ? 0.7 : 1 }}
+                        >
+                            {verifyLoading ? 'Verifying...' : 'Join Interview'}
+                        </button>
+                    </form>
+                </div>
+            </div>
+        );
+    }
+
     // ── Loading / Error ───────────────────────────────────────────────────────
     if (!session && !loadError) {
         return (
@@ -1004,6 +1121,7 @@ export default function InterviewPage() {
                 title={completedData?.title}
                 subtitle={completedData?.sub}
                 scores={completedData?.scores}
+                showRegister={verifiedViaMagicLink}
             />
 
             {/* Interview Room */}

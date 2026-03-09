@@ -1,23 +1,16 @@
 export const API_BASE = '/api/v1';
 
-function getToken(): string | null {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem('token');
-}
-
 export async function apiCall<T = unknown>(
     method: string,
     path: string,
     body: object | null = null
 ): Promise<T> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const token = getToken();
-    if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const res = await fetch(API_BASE + path, {
         method,
         headers,
-        credentials: 'include',
+        credentials: 'include',   // Always send httpOnly cookie — no localStorage token
         body: body ? JSON.stringify(body) : null,
     });
 
@@ -28,12 +21,9 @@ export async function apiCall<T = unknown>(
     const errorMessage = data?.error?.message || data?.detail || `Error ${res.status}`;
 
     if (res.status === 401) {
-        if (!path.startsWith('/auth/')) {
-            if (typeof window !== 'undefined') {
-                localStorage.removeItem('token');
-                window.location.href = '/';
-            }
-        }
+        // Just throw — the caller (useAuth / page.tsx) handles 401 by showing
+        // the login form. DO NOT redirect to '/' here; that causes an infinite
+        // reload loop since '/' itself calls /users/me on every mount.
         throw new Error(errorMessage);
     }
 
@@ -42,12 +32,10 @@ export async function apiCall<T = unknown>(
 }
 
 export async function uploadFile(path: string, file: File, fieldName = 'file'): Promise<void> {
-    const token = getToken();
     const fd = new FormData();
     fd.append(fieldName, file);
     const res = await fetch(API_BASE + path, {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
         body: fd,
     });

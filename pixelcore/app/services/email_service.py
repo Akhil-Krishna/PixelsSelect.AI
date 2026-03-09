@@ -46,7 +46,7 @@ class EmailService:
         provider = settings.EMAIL_PROVIDER.strip().lower()
 
         if provider == "log":
-            logger.info("[EMAIL LOG] to=%s subject=%s body=%.300s", to, subject, html_body)
+            logger.info("[EMAIL LOG] to=%s subject=%s body=%s", to, subject, html_body)
             return True
 
         if provider == "sendgrid":
@@ -78,21 +78,9 @@ class EmailService:
     @staticmethod
     def _build_candidate_schedule_html(
         candidate_name: str,
-        candidate_email: str,
         interview_title: str,
         scheduled_label: str,
-        temp_password: Optional[str] = None,
     ) -> str:
-        creds = ""
-        if temp_password:
-            creds = f"""
-            <div style="background:#FEF3C7;border:1px solid #F59E0B;border-radius:8px;padding:16px;margin:16px 0;">
-              <p style="margin:0 0 8px;font-weight:700;color:#92400E;">Your Login Credentials</p>
-              <p style="margin:4px 0;color:#78350F;">Email: <strong>{candidate_email}</strong></p>
-              <p style="margin:4px 0;color:#78350F;">Password: <strong>{temp_password}</strong></p>
-              <p style="margin:8px 0 0;font-size:12px;color:#92400E;">Log in before the interview starts.</p>
-            </div>
-            """
         return f"""
         <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
           <h2 style="color:#1f2937;">Interview Scheduled</h2>
@@ -102,7 +90,9 @@ class EmailService:
             <tr><td style="padding:10px 12px;font-weight:600;color:#374151;width:36%;">Interview</td><td style="padding:10px 12px;">{interview_title}</td></tr>
             <tr style="background:#f3f4f6;"><td style="padding:10px 12px;font-weight:600;color:#374151;">Scheduled</td><td style="padding:10px 12px;">{scheduled_label}</td></tr>
           </table>
-          {creds}
+          <p style="background:#EFF6FF;border:1px solid #3B82F6;border-radius:8px;padding:14px;margin:16px 0;color:#1E40AF;font-size:14px;">
+            \U0001f4e7 You will receive a <strong>separate email with your interview access link</strong> closer to the scheduled time. No login or registration is needed.
+          </p>
         </div>
         """
 
@@ -136,7 +126,6 @@ class EmailService:
         candidate_name: str,
         interview_title: str,
         scheduled_at: "datetime | str",
-        temp_password: Optional[str] = None,
     ) -> bool:
         """
         Immediate schedule notification (without join link).
@@ -150,10 +139,8 @@ class EmailService:
             subject=f"Interview Scheduled: {interview_title}",
             html_body=self._build_candidate_schedule_html(
                 candidate_name=candidate_name,
-                candidate_email=candidate_email,
                 interview_title=interview_title,
                 scheduled_label=label,
-                temp_password=temp_password,
             ),
         )
 
@@ -201,6 +188,101 @@ class EmailService:
         return self.send_sync(
             to=interviewer_email,
             subject=f"Interview Assignment: {interview_title}",
+            html_body=html,
+        )
+
+
+    def send_org_verification_email(
+        self,
+        admin_email: str,
+        admin_name: str,
+        org_name: str,
+        verify_link: str,
+    ) -> bool:
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
+          <div style="text-align:center;margin-bottom:20px;">
+            <div style="font-size:40px;">🤖</div>
+            <h2 style="margin:8px 0;color:#1f2937;">Verify your organisation email</h2>
+          </div>
+          <p>Hello <strong>{admin_name}</strong>,</p>
+          <p>You registered <strong>{org_name}</strong> on PixelsSelect.AI. Please verify your email to activate your account.</p>
+          <div style="text-align:center;margin:28px 0;">
+            <a href="{verify_link}" style="background:#4F46E5;color:#fff;padding:14px 32px;text-decoration:none;border-radius:8px;font-weight:700;font-size:15px;display:inline-block;">
+              Verify Email Address
+            </a>
+          </div>
+          <p style="font-size:12px;color:#6b7280;">This link expires in 24 hours. If you did not register, you can safely ignore this email.</p>
+          <p style="font-size:12px;color:#9ca3af;">Direct link: {verify_link}</p>
+        </div>
+        """
+        logger.info("[VERIFY LINK] %s", verify_link)
+        return self.send_sync(
+            to=admin_email,
+            subject=f"Verify your email — {org_name} on PixelsSelect.AI",
+            html_body=html,
+        )
+
+    def send_staff_invitation_email(
+        self,
+        to_email: str,
+        org_name: str,
+        invited_by_name: str,
+        role: str,
+        setup_link: str,
+        expires_hours: int = 48,
+    ) -> bool:
+        role_label = role.replace("_", " ").title()
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
+          <div style="text-align:center;margin-bottom:20px;">
+            <div style="font-size:40px;">📧</div>
+            <h2 style="margin:8px 0;color:#1f2937;">You’ve been invited</h2>
+          </div>
+          <p><strong>{invited_by_name}</strong> has invited you to join <strong>{org_name}</strong> as a <strong>{role_label}</strong> on PixelsSelect.AI.</p>
+          <div style="text-align:center;margin:28px 0;">
+            <a href="{setup_link}" style="background:#4F46E5;color:#fff;padding:14px 32px;text-decoration:none;border-radius:8px;font-weight:700;font-size:15px;display:inline-block;">
+              Set Up Your Account
+            </a>
+          </div>
+          <p style="font-size:12px;color:#6b7280;">This invitation expires in {expires_hours} hours. If you did not expect this invitation, you can ignore this email.</p>
+          <p style="font-size:12px;color:#9ca3af;">Direct link: {setup_link}</p>
+        </div>
+        """
+        logger.info("[INVITE LINK] %s", setup_link)
+        return self.send_sync(
+            to=to_email,
+            subject=f"You’ve been invited to join {org_name} on PixelsSelect.AI",
+            html_body=html,
+        )
+
+    def send_password_reset_email(
+        self,
+        to_email: str,
+        full_name: str,
+        reset_link: str,
+    ) -> bool:
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
+          <div style="text-align:center;margin-bottom:20px;">
+            <div style="font-size:40px;">🔒</div>
+            <h2 style="margin:8px 0;color:#1f2937;">Reset your password</h2>
+          </div>
+          <p>Hello <strong>{full_name}</strong>,</p>
+          <p>We received a request to reset your PixelsSelect.AI password. Click the button below to set a new password.</p>
+          <div style="text-align:center;margin:28px 0;">
+            <a href="{reset_link}" style="background:#DC2626;color:#fff;padding:14px 32px;text-decoration:none;border-radius:8px;font-weight:700;font-size:15px;display:inline-block;">
+              Reset Password
+            </a>
+          </div>
+          <p style="font-size:12px;color:#6b7280;">This link expires in 1 hour. If you didn’t request a reset, you can safely ignore this email.</p>
+          <p style="font-size:12px;color:#9ca3af;">Direct link: {reset_link}</p>
+        </div>
+        """
+        logger.info("[RESET LINK] %s", reset_link)
+        return self.send_sync(
+            to=to_email,
+            subject="Reset your PixelsSelect.AI password",
             html_body=html,
         )
 

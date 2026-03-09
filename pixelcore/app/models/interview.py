@@ -49,6 +49,9 @@ class Interview(Base):
     organisation_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("organisations.id"), nullable=True, index=True
     )
+    department_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("departments.id"), nullable=True, index=True
+    )
 
     hr_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     candidate_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)

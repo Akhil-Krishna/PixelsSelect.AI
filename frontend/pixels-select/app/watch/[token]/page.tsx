@@ -153,9 +153,6 @@ export default function WatchPage() {
 
     // ── Boot ──────────────────────────────────────────────────────────────────
     useEffect(() => {
-        const tok = localStorage.getItem('token');
-        if (!tok) { window.location.href = '/'; return; }
-
         (async () => {
             try {
                 const me = await apiCall<{ role: string }>('GET', '/users/me');
@@ -184,9 +181,11 @@ export default function WatchPage() {
                     if (localVideoRef.current) localVideoRef.current.srcObject = s;
                 } catch { addFlag('Camera/mic unavailable', 'warn', 'fa-video-slash'); }
 
-                // Read JWT for WebRTC WS auth
-                setJwtToken(localStorage.getItem('token') || '');
-
+                // Fetch JWT for WebSocket auth (cookies don't work cross-origin for WS)
+                try {
+                    const wt = await apiCall<{ token: string }>('GET', '/auth/ws-token');
+                    if (wt?.token) setJwtToken(wt.token);
+                } catch { /* WebRTC will be unavailable */ }
                 // Load messages
                 const msgs = await apiCall<Message[]>('GET', `/interview-session/messages/${token}`);
                 if (msgs?.length) {

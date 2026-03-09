@@ -7,11 +7,12 @@ import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
 
 interface LoginFormProps {
-    onSuccess: (user: User, token: string) => void;
+    onSuccess: (user: User) => void;
     onSwitchToRegister: () => void;
+    onForgotPassword: () => void;
 }
 
-export function LoginForm({ onSuccess, onSwitchToRegister }: LoginFormProps) {
+export function LoginForm({ onSuccess, onSwitchToRegister, onForgotPassword }: LoginFormProps) {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
@@ -24,7 +25,7 @@ export function LoginForm({ onSuccess, onSwitchToRegister }: LoginFormProps) {
         setError('');
         try {
             const d = await apiCall<{ access_token: string; user: User }>('POST', '/auth/login', { email, password });
-            onSuccess(d.user, d.access_token);
+            onSuccess(d.user);
         } catch (e: unknown) {
             setError((e as Error).message || 'Login failed. Check your credentials.');
         } finally {
@@ -58,12 +59,22 @@ export function LoginForm({ onSuccess, onSwitchToRegister }: LoginFormProps) {
                 />
             </div>
 
+            <div style={{ textAlign: 'right', marginTop: -8, marginBottom: 12 }}>
+                <a
+                    href="#"
+                    onClick={e => { e.preventDefault(); onForgotPassword(); }}
+                    style={{ color: 'var(--primary)', fontSize: 13 }}
+                >
+                    Forgot password?
+                </a>
+            </div>
+
             <Button variant="primary" fullWidth loading={loading} icon="fa-sign-in-alt" onClick={handleLogin}>
                 Sign In
             </Button>
 
             <p className="text-sm text-muted" style={{ textAlign: 'center', marginTop: 14 }}>
-                No account?{' '}
+                New organisation?{' '}
                 <a href="#" onClick={e => { e.preventDefault(); onSwitchToRegister(); }} style={{ color: 'var(--primary)' }}>
                     Register here
                 </a>
