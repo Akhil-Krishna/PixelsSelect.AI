@@ -5,6 +5,7 @@ All settings are read from environment variables (or a .env file).
 Required providers are selected at runtime via *_PROVIDER flags so the
 system can be reconfigured without code changes.
 """
+import os
 from functools import lru_cache
 from typing import Optional
 
@@ -180,6 +181,17 @@ class Settings(BaseSettings):
             return "auto"
         v = str(value).strip().lower()
         return v if v in {"auto", "memory", "redis"} else "auto"
+
+    @field_validator("SECRET_KEY", mode="after")
+    @classmethod
+    def _check_secret(cls, v: str) -> str:
+        insecure = {"change-me-in-production", "", "secret", "changeme"}
+        if v in insecure and os.getenv("APP_ENV", "development") == "production":
+            raise ValueError(
+                "SECRET_KEY must be explicitly set in production. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_hex(64))\""
+            )
+        return v
 
 
 @lru_cache()

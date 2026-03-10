@@ -50,6 +50,7 @@ export interface Interview {
     ai_paused?: boolean;
     started_at?: string;
     department_id?: string;
+    is_assigned?: boolean;
 }
 
 export interface Message {

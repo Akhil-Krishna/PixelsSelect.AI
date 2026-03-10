@@ -341,18 +341,21 @@ async def reset_password(
     have a 'verify_' prefix in their hash and will never match.
     """
     token_hash = hash_token(payload.token)
+
+    # First: find the token regardless of used status for better diagnostics
     result = await db.execute(
         select(PasswordResetToken)
         .options(selectinload(PasswordResetToken.user))
-        .where(
-            PasswordResetToken.token_hash == token_hash,
-            PasswordResetToken.used.is_(False),
-        )
+        .where(PasswordResetToken.token_hash == token_hash)
     )
     record = result.scalar_one_or_none()
 
     if not record:
         raise HTTPException(400, "Invalid or already used reset link")
+
+    if record.used:
+        raise HTTPException(400, "This reset link has already been used. Please request a new one.")
+
     if record.is_expired:
         raise HTTPException(400, "This reset link has expired. Please request a new one.")
 
@@ -390,7 +393,6 @@ async def candidate_register(
     current_user.auth_provider = "local"
     current_user.is_verified = True
     await db.flush()
-    await db.commit()
 
     # Re-issue a standard-length JWT and cookie
     token = create_access_token(data={"sub": current_user.id})

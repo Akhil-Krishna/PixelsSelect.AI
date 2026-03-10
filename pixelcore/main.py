@@ -15,7 +15,7 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal, init_db
 from app.core.error_handlers import register_exception_handlers
 from app.core.logging_config import setup_logging
-from app.core.middleware import RequestContextMiddleware
+from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 
 # ── Logging must be configured before anything else emits a log ───────────────
 try:
@@ -30,6 +30,13 @@ async def _seed_demo_data() -> None:
     from app.models.user import Organisation, User, UserRole
 
     async with AsyncSessionLocal() as session:
+        # B3/B11: Never seed demo data in production
+        if settings.APP_ENV == "production":
+            logging.getLogger(__name__).warning(
+                "SEED_DEMO_DATA is true but APP_ENV=production — skipping seed"
+            )
+            return
+
         existing = await session.execute(
             select(User).where(User.email == "admin@demo.com")
         )
@@ -136,6 +143,9 @@ app.add_middleware(
 # ── Request correlation ID middleware ─────────────────────────────────────────
 if settings.ENABLE_REQUEST_ID_MIDDLEWARE:
     app.add_middleware(RequestContextMiddleware)
+
+# ── Security headers ─────────────────────────────────────────────────────────
+app.add_middleware(SecurityHeadersMiddleware)
 
 # ── Global error envelope ─────────────────────────────────────────────────────
 register_exception_handlers(app)

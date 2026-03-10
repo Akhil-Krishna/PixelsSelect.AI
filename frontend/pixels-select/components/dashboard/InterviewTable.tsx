@@ -123,7 +123,7 @@ function InterviewRow({ iv, isCandidate, isStaff, currentUser, onViewDetail, onC
                             View
                         </Button>
                     )}
-                    {isStaff && isActive && (
+                    {isStaff && isActive && (canModify || iv.is_assigned !== false) && (
                         <Button as="a" href={`/watch/${iv.access_token}`} target="_blank" variant="outline" size="xs" icon="fa-video">
                             Watch
                         </Button>

@@ -215,6 +215,8 @@ async def chat(
     if iv.ai_paused:
         return [MessageOut.model_validate(candidate_msg)]
 
+    # B13: Reload messages to include the just-flushed candidate message
+    await db.refresh(iv, ['messages'])
     msgs = sorted(iv.messages, key=lambda m: m.timestamp)
     ai_result = await chat_turn(iv, msgs, payload.content, payload.code_snippet)
     ai_text = ai_result.get("text", "")
@@ -272,6 +274,14 @@ async def _run_complete(
             ai_feedback=iv.ai_feedback or "",
             cheating_score=float(iv.cheating_score) if iv.cheating_score is not None else None,
             cheating_flags=(iv.emotion_scores or {}).get("cheating_flags", []),
+        )
+
+    # B5: Only allow completing an IN_PROGRESS interview
+    if iv.status != InterviewStatus.IN_PROGRESS:
+        raise HTTPException(
+            400,
+            f"Cannot complete an interview with status '{iv.status.value}'. "
+            "Interview must be in progress."
         )
 
     logs_res = await db.execute(

@@ -64,3 +64,20 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             )
             if response is not None:
                 response.headers["X-Request-ID"] = request_id
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds standard security headers to every response."""
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # HSTS only in production (requires HTTPS)
+        from app.core.config import settings
+        if settings.APP_ENV == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        return response

@@ -15,7 +15,6 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user, require_hr
-from app.core.security import get_password_hash
 from app.core.task_runner import enqueue_task_with_fallback, run_task_with_fallback
 from app.models.department import Department, DepartmentQuestionBank
 from app.models.interview import Interview, InterviewInterviewer, InterviewStatus
@@ -60,9 +59,11 @@ async def _load_interview(interview_id: str, db: AsyncSession) -> Interview:
     return iv
 
 
-def _to_schema(iv: Interview) -> InterviewWithInterviewers:
+def _to_schema(iv: Interview, user_id: str | None = None) -> InterviewWithInterviewers:
     obj = InterviewWithInterviewers.model_validate(iv)  # type: ignore[arg-type]
     obj.has_recording = bool(iv.recording_url)
+    if user_id:
+        obj.is_assigned = any(ii.interviewer_id == user_id for ii in iv.interviewers)
     return obj
 
 
@@ -94,7 +95,7 @@ async def schedule_interview(
         candidate = User(
             email=payload.candidate_email,
             full_name=payload.candidate_email.split("@")[0].replace(".", " ").title(),
-            hashed_password="",               # placeholder — no login password
+            hashed_password=None,                 # placeholder — no login password
             role=UserRole.CANDIDATE,
             auth_provider="magic_link",
             is_verified=False,
@@ -143,7 +144,6 @@ async def schedule_interview(
     db.add(interview)
     await db.flush()
 
-    hr_domain = current_user.email.split("@")[1].lower()
     for iid in payload.interviewer_ids:
         r = await db.execute(
             select(User)
@@ -153,10 +153,9 @@ async def schedule_interview(
         interviewer = r.scalar_one_or_none()
         if not interviewer:
             continue
+        # B6: Use org membership, not email domain, as the gate
         if current_user.organisation_id and interviewer.organisation_id != current_user.organisation_id:
             raise HTTPException(400, f"Interviewer {interviewer.email} must belong to your organisation.")
-        if interviewer.email.split("@")[1].lower() != hr_domain:
-            raise HTTPException(400, f"Interviewer {interviewer.email} must share your email domain (@{hr_domain}).")
 
         db.add(InterviewInterviewer(interview_id=interview.id, interviewer_id=iid))
 
@@ -280,7 +279,7 @@ async def list_interviews(
 
     query = query.options(*_eager_opts()).order_by(Interview.scheduled_at.asc())
     result = await db.execute(query)
-    return [_to_schema(iv) for iv in result.scalars().unique().all()]
+    return [_to_schema(iv, current_user.id) for iv in result.scalars().unique().all()]
 
 
 @router.get("/{interview_id}", response_model=InterviewWithInterviewers)

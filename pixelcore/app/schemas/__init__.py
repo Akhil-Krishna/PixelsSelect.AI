@@ -108,8 +108,8 @@ class OrgOut(BaseModel):
 
 class UserCreate(BaseModel):
     email: EmailStr
-    full_name: str
-    password: str
+    full_name: str = Field(..., min_length=2, max_length=100)
+    password: str = Field(..., min_length=8, max_length=128)
     role: UserRole = UserRole.CANDIDATE
     organisation_id: Optional[str] = None
     department_id: Optional[str] = None
@@ -242,6 +242,7 @@ class InterviewerOut(BaseModel):
 class InterviewWithInterviewers(InterviewOut):
     interviewers: List[InterviewerOut] = Field(default_factory=list)
     has_recording: bool = False
+    is_assigned: bool = True  # True if current viewer is directly assigned as interviewer
 
     model_config = {"from_attributes": True}
 

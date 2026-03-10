@@ -14,7 +14,7 @@ from app.core.config import settings
 # ── Engine ─────────────────────────────────────────────────────────────────────
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
+    echo=settings.DEBUG and settings.APP_ENV != "production",
     future=True,
     pool_pre_ping=settings.DB_POOL_PRE_PING,
     pool_recycle=settings.DB_POOL_RECYCLE,

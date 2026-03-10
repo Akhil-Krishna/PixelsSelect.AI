@@ -97,7 +97,7 @@ export function DetailModal({ interview: iv, currentUserRole, onClose }: DetailM
             <hr className="divider" />
             <div className="flex justify-between">
                 <Button variant="ghost" onClick={onClose}>Close</Button>
-                {iv.status === 'in_progress' && (
+                {iv.status === 'in_progress' && (currentUserRole !== 'interviewer' || iv.is_assigned !== false) && (
                     <Button as="a" href={`/watch/${iv.access_token}`} target="_blank" variant="primary" size="sm" icon="fa-eye">
                         Watch Live
                     </Button>

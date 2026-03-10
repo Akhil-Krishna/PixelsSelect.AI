@@ -13,7 +13,7 @@ import { ChatPanel } from '../../../components/interview/ChatPanel';
 import { StartOverlay } from '../../../components/interview/StartOverlay';
 import { CompleteOverlay } from '../../../components/interview/CompleteOverlay';
 
-const VISION_INTERVAL_MS = 1500;
+const VISION_INTERVAL_MS = 5000;
 
 interface ScoreBox { label: string; val: number; color: string; }
 interface CompletedState { title: string; sub: string; scores: ScoreBox[]; }
@@ -708,6 +708,8 @@ export default function InterviewPage() {
             } catch (err) {
                 console.warn("Screen share permission denied/cancelled", err);
                 setStartError('Screen sharing is required to start the interview.');
+                // F3: Release mic when screen share is denied
+                camStream.current?.getAudioTracks().forEach(t => t.stop());
                 return;
             }
 
@@ -769,10 +771,13 @@ export default function InterviewPage() {
                 });
             }, 1000);
 
-            // Vision
+            // Vision (F1: guard against overlapping requests)
+            const visionPending = { current: false };
             visionRef.current = setInterval(async () => {
+                if (visionPending.current) return;
                 const vid = localVideoRef.current;
                 if (!vid?.videoWidth) return;
+                visionPending.current = true;
                 const cv = document.createElement('canvas'); cv.width = 160; cv.height = 120;
                 cv.getContext('2d')!.drawImage(vid, 0, 0, 160, 120);
                 const b64 = cv.toDataURL('image/jpeg', 0.6).split(',')[1];
@@ -795,6 +800,7 @@ export default function InterviewPage() {
                     if (fc > 1) setMultiFace(m => m + 1);
                     if (r.dominant_emotion) setEmotion(r.dominant_emotion);
                 } catch { }
+                finally { visionPending.current = false; }
             }, VISION_INTERVAL_MS);
 
             if (res?.messages) res.messages.forEach(addMsg);

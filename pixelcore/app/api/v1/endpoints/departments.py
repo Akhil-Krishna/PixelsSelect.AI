@@ -167,6 +167,7 @@ async def delete_department(
     if not dept or dept.organisation_id != current_user.organisation_id:
         raise HTTPException(404, "Department not found")
     await db.delete(dept)
+    await db.flush()
 
 
 # ── Question Banks ────────────────────────────────────────────────────────────
@@ -270,3 +271,4 @@ async def delete_question_bank(
     if not qb or qb.department.organisation_id != current_user.organisation_id:
         raise HTTPException(404, "Question bank not found")
     await db.delete(qb)
+    await db.flush()

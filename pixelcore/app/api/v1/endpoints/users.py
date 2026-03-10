@@ -136,8 +136,13 @@ async def update_user(
     if payload.is_active is not None:
         user.is_active = payload.is_active
     await db.flush()
-    await db.refresh(user)
-    return user
+    # Reload with relationships to avoid MissingGreenlet (B4)
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.organisation), selectinload(User.department))
+        .where(User.id == user_id)
+    )
+    return _enrich_user(result.scalar_one())
 
 
 # ── Organisations ─────────────────────────────────────────────────────────────
