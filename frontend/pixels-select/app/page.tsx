@@ -10,6 +10,9 @@ import { useToast } from '../hooks/useToast';
 import { Sidebar } from '../components/layout/Sidebar';
 import { Topbar } from '../components/layout/Topbar';
 
+// Landing
+import { LandingPage } from '../components/landing/LandingPage';
+
 // Auth
 import { LoginForm } from '../components/auth/LoginForm';
 import { OrgRegisterForm } from '../components/auth/RegisterForm';
@@ -33,8 +36,8 @@ import { Button } from '../components/ui/Button';
 type AppPage = 'Dashboard' | 'Interviews' | 'Upcoming' | 'Departments' | 'Users';
 
 // ── Auth Page ──────────────────────────────────────────────────────────────────
-function AuthPage({ onSuccess }: { onSuccess: (user: User) => void }) {
-  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
+function AuthPage({ onSuccess, initialMode = 'login', onBackToLanding }: { onSuccess: (user: User) => void; initialMode?: 'login' | 'register'; onBackToLanding: () => void }) {
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>(initialMode);
 
   const headings: Record<typeof mode, string> = {
     login: 'Welcome back',
@@ -68,6 +71,18 @@ function AuthPage({ onSuccess }: { onSuccess: (user: User) => void }) {
             onBack={() => setMode('login')}
           />
         )}
+
+        <div style={{ textAlign: 'center', marginTop: 16 }}>
+          <button
+            onClick={onBackToLanding}
+            style={{
+              background: 'none', border: 'none', color: 'var(--muted)',
+              cursor: 'pointer', fontSize: 13, fontFamily: 'inherit',
+            }}
+          >
+            ← Back to home
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -173,6 +188,8 @@ export default function HomePage() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [showAddUserForUsers, setShowAddUserForUsers] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
 
   const loadInterviews = useCallback(async () => {
     try {
@@ -238,9 +255,17 @@ export default function HomePage() {
 
   if (loading) return <LoadingScreen />;
 
-  // ── Authentication View ──
+  // ── Landing / Authentication View ──
   if (!currentUser) {
-    return <AuthPage onSuccess={handleAuthSuccess} />;
+    if (showLanding) {
+      return (
+        <LandingPage
+          onLogin={() => { setAuthMode('login'); setShowLanding(false); }}
+          onRegister={() => { setAuthMode('register'); setShowLanding(false); }}
+        />
+      );
+    }
+    return <AuthPage onSuccess={handleAuthSuccess} initialMode={authMode} onBackToLanding={() => setShowLanding(true)} />;
   }
 
   const isAdminOrHR = ['hr', 'admin'].includes(currentUser.role);

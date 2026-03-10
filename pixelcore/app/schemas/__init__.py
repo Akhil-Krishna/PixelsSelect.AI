@@ -122,6 +122,7 @@ class UserOut(BaseModel):
     role: UserRole
     is_active: bool
     is_verified: bool = False
+    auth_provider: Optional[str] = None
     last_login: Optional[datetime] = None
     created_at: datetime
     organisation_id: Optional[str] = None

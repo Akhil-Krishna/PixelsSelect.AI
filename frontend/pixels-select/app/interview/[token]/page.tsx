@@ -841,6 +841,13 @@ export default function InterviewPage() {
                         { label: 'Integrity', val: data.integrity_score ?? 0, color: '#EF4444' },
                     ],
                 });
+                // Check if candidate still needs to register (magic_link user without a password)
+                try {
+                    const me = await apiCall<{ auth_provider?: string }>('GET', '/users/me');
+                    if (me.auth_provider === 'magic_link') {
+                        setVerifiedViaMagicLink(true);
+                    }
+                } catch { /* not authenticated or non-candidate — skip */ }
                 return;
             }
 
