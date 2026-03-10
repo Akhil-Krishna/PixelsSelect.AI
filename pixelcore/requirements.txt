@@ -51,4 +51,4 @@ celery[redis]==5.4.0
 kokoro>=0.9.2
 soundfile>=0.12.1
 
-slowapi
+slowapi==0.1.9

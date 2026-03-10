@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -504,3 +505,40 @@ async def interviewer_ask(
     await db.flush()
     await db.refresh(msg)
     return MessageOut.model_validate(msg)
+
+
+# ── F6: Tab-switch reporting ──────────────────────────────────────────────────
+
+class TabSwitchPayload(BaseModel):
+    count: int = 0
+
+
+@router.post("/tab-switch/{interview_token}")
+async def report_tab_switch(
+    interview_token: str,
+    payload: TabSwitchPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Persist the candidate's tab-switch count directly to the interview."""
+    result = await db.execute(
+        select(Interview)
+        .options(
+            selectinload(Interview.interviewers)
+            .selectinload(InterviewInterviewer.interviewer),
+            selectinload(Interview.candidate),
+        )
+        .where(Interview.access_token == interview_token)
+    )
+    iv = result.scalar_one_or_none()
+    if not iv:
+        raise HTTPException(404, "Interview not found")
+    AccessPolicy.ensure_candidate_owner(iv, current_user)
+
+    # Only update if the new count is higher (monotonic)
+    if payload.count > (iv.tab_switch_count or 0):
+        iv.tab_switch_count = payload.count
+        await db.flush()
+
+    return {"tab_switch_count": iv.tab_switch_count}
+

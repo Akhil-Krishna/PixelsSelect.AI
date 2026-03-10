@@ -115,7 +115,24 @@ async def lifespan(app: FastAPI):
     print(f"  DB              : {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
     print("=" * 62)
 
+    # B20: Periodic idempotency key cleanup (every hour)
+    async def _idempotency_cleanup_loop():
+        while True:
+            await asyncio.sleep(3600)  # 1 hour
+            try:
+                async with AsyncSessionLocal() as session:
+                    from app.services.idempotency_service import cleanup_expired_keys
+                    await cleanup_expired_keys(session)
+                    await session.commit()
+            except Exception as e:
+                logging.getLogger(__name__).warning("Idempotency cleanup error: %s", e)
+
+    cleanup_task = asyncio.create_task(_idempotency_cleanup_loop())
+
     yield
+
+    # Cancel cleanup on shutdown
+    cleanup_task.cancel()
 
 
 # ── Application factory ────────────────────────────────────────────────────────
@@ -146,6 +163,14 @@ if settings.ENABLE_REQUEST_ID_MIDDLEWARE:
 
 # ── Security headers ─────────────────────────────────────────────────────────
 app.add_middleware(SecurityHeadersMiddleware)
+
+# ── Rate limiting (slowapi) ──────────────────────────────────────────────────
+from slowapi import _rate_limit_exceeded_handler  # noqa: E402
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+from app.core.rate_limiter import limiter  # noqa: E402
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Global error envelope ─────────────────────────────────────────────────────
 register_exception_handlers(app)

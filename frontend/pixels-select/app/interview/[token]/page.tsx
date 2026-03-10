@@ -13,7 +13,7 @@ import { ChatPanel } from '../../../components/interview/ChatPanel';
 import { StartOverlay } from '../../../components/interview/StartOverlay';
 import { CompleteOverlay } from '../../../components/interview/CompleteOverlay';
 
-const VISION_INTERVAL_MS = 5000;
+const VISION_INTERVAL_MS = 2000;
 
 interface ScoreBox { label: string; val: number; color: string; }
 interface CompletedState { title: string; sub: string; scores: ScoreBox[]; }
@@ -129,7 +129,9 @@ export default function InterviewPage() {
         lastTabSwitchMsRef.current = now;
         tabSwRef.current += 1;
         setTabSwitches(tabSwRef.current);
-    }, []);
+        // F6: Persist tab-switch count to backend immediately (fire-and-forget)
+        apiCall('POST', `/interview-session/tab-switch/${token}`, { count: tabSwRef.current }).catch(() => {});
+    }, [token]);
 
     const stopBackendTtsAudio = useCallback(() => {
         if (recordingTtsSourceRef.current) {

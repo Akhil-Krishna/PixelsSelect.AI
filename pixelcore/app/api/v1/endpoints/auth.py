@@ -5,7 +5,7 @@ forgot password, and reset password.
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -36,6 +36,7 @@ from app.schemas import (
     UserOut,
 )
 from app.services.email_service import email_service
+from app.core.rate_limiter import limiter, AUTH_RATE, FORGOT_RATE, REGISTER_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,9 @@ async def get_ws_token(
 # ── Login ─────────────────────────────────────────────────────────────────────
 
 @router.post("/login", response_model=Token)
+@limiter.limit(AUTH_RATE)
 async def login(
-    payload: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
+    request: Request, payload: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
         select(User)
@@ -119,7 +121,8 @@ async def logout(response: Response):
 # ── Candidate self-registration (candidates only) ─────────────────────────────
 
 @router.post("/register", response_model=UserOut, status_code=201)
-async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
+@limiter.limit(REGISTER_RATE)
+async def register(request: Request, payload: UserCreate, db: AsyncSession = Depends(get_db)):
     """Open self-registration for candidate accounts only."""
     if payload.role != UserRole.CANDIDATE:
         raise HTTPException(
@@ -291,7 +294,9 @@ async def verify_org_email(
 # ── Forgot password ───────────────────────────────────────────────────────────
 
 @router.post("/forgot-password")
+@limiter.limit(FORGOT_RATE)
 async def forgot_password(
+    request: Request,
     payload: ForgotPasswordRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),

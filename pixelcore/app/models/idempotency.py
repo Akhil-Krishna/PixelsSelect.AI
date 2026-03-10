@@ -2,13 +2,17 @@
 Idempotency key model — prevents duplicate mutations on retry.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import DateTime, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+
+
+def _default_expires() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(hours=24)
 
 
 class IdempotencyKey(Base):
@@ -29,3 +33,9 @@ class IdempotencyKey(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        default=_default_expires,
+        nullable=True,
+    )
+

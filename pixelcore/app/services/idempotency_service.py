@@ -89,3 +89,27 @@ class IdempotencyService:
 idempotency_service = IdempotencyService()
 check_idempotency = idempotency_service.check
 store_idempotency_response = idempotency_service.store
+
+
+async def cleanup_expired_keys(db: AsyncSession) -> int:
+    """Delete idempotency rows past their expires_at (or older than 24h if null)."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import delete, or_
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+
+    stmt = delete(IdempotencyKey).where(
+        or_(
+            IdempotencyKey.expires_at <= now,
+            # Legacy rows without expires_at — use created_at fallback
+            (IdempotencyKey.expires_at.is_(None)) & (IdempotencyKey.created_at <= cutoff),
+        )
+    )
+    result = await db.execute(stmt)
+    await db.flush()
+    count = result.rowcount or 0
+    if count:
+        logger.info("Purged %d expired idempotency keys", count)
+    return count
+

@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -29,6 +29,59 @@ router = APIRouter(prefix="/recordings", tags=["recordings"])
 _RECORDINGS_DIR = Path("recordings")
 _MAX_BYTES = 500 * 1024 * 1024
 _ALLOWED_MIME = {"video/webm", "video/mp4", "video/x-matroska", "application/octet-stream"}
+_CHUNK = 1024 * 1024  # 1 MB chunks for streaming
+
+
+def _range_response(request: Request, path: Path, token: str):
+    """Serve a video file with HTTP Range support for seeking."""
+    file_size = path.stat().st_size
+    media = "video/webm" if path.suffix == ".webm" else "video/mp4"
+    filename = f"interview_{token[:8]}{path.suffix}"
+
+    range_header = request.headers.get("range")
+    if not range_header:
+        # Full file response
+        return FileResponse(
+            str(path), media_type=media, filename=filename,
+            headers={"Accept-Ranges": "bytes"},
+        )
+
+    # Parse "bytes=start-end"
+    try:
+        unit, ranges = range_header.split("=", 1)
+        start_str, end_str = ranges.strip().split("-", 1)
+        start = int(start_str) if start_str else 0
+        end = int(end_str) if end_str else file_size - 1
+    except (ValueError, AttributeError):
+        raise HTTPException(416, "Invalid Range header")
+
+    if start >= file_size or end >= file_size or start > end:
+        raise HTTPException(416, "Range not satisfiable")
+
+    length = end - start + 1
+
+    def _iter():
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(
+        _iter(),
+        status_code=206,
+        media_type=media,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(length),
+            "Accept-Ranges": "bytes",
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )
 
 
 async def _get_interview(token: str, db: AsyncSession) -> Interview:
@@ -105,6 +158,7 @@ async def upload_recording(
 @router.get("/download/{interview_token}")
 async def download_recording(
     interview_token: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -120,12 +174,7 @@ async def download_recording(
         raise HTTPException(404, "Recording not found")
 
     p = Path(iv.recording_url)
-    return FileResponse(
-        str(p),
-        media_type="video/webm" if p.suffix == ".webm" else "video/mp4",
-        filename=f"interview_{interview_token[:8]}{p.suffix}",
-        headers={"Accept-Ranges": "bytes"},
-    )
+    return _range_response(request, p, interview_token)
 
 
 @router.delete("/{interview_token}", status_code=204)
