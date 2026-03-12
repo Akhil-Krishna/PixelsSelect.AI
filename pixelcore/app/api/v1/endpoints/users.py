@@ -41,6 +41,133 @@ async def get_me(
     return _enrich_user(result.scalar_one())
 
 
+@router.get("/me/stats")
+async def get_my_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return role-specific interview analytics for the current user."""
+    from sqlalchemy import func
+    from app.models.interview import Interview, InterviewInterviewer, InterviewStatus
+
+    role = current_user.role
+
+    if role == UserRole.ADMIN:
+        # Admin: ALL interviews across the entire organisation
+        org_filter = (
+            Interview.organisation_id == current_user.organisation_id
+            if current_user.organisation_id
+            else True  # superadmin fallback — see all
+        )
+        base = select(func.count()).select_from(Interview).where(org_filter)
+    elif role == UserRole.HR:
+        # HR: interviews they scheduled
+        base = select(func.count()).select_from(Interview).where(
+            Interview.hr_id == current_user.id
+        )
+    elif role == UserRole.INTERVIEWER:
+        # Interviewer: interviews they were assigned to
+        base = (
+            select(func.count())
+            .select_from(Interview)
+            .join(InterviewInterviewer, Interview.id == InterviewInterviewer.interview_id)
+            .where(InterviewInterviewer.interviewer_id == current_user.id)
+        )
+    else:
+        # Candidate: interviews they participated in
+        base = select(func.count()).select_from(Interview).where(
+            Interview.candidate_id == current_user.id
+        )
+
+    total_r = await db.execute(base)
+    total = total_r.scalar() or 0
+
+    completed_r = await db.execute(base.where(Interview.status == InterviewStatus.COMPLETED))
+    completed = completed_r.scalar() or 0
+
+    passed_r = await db.execute(base.where(Interview.passed.is_(True)))
+    passed = passed_r.scalar() or 0
+
+    failed_r = await db.execute(base.where(Interview.passed.is_(False)))
+    failed = failed_r.scalar() or 0
+
+    pass_rate = round((passed / completed) * 100, 1) if completed > 0 else 0.0
+
+    result = {
+        "total": total,
+        "completed": completed,
+        "passed": passed,
+        "failed": failed,
+        "pass_rate": pass_rate,
+        "role": role.value,
+    }
+
+    # Admin gets extra org-wide metrics
+    if role == UserRole.ADMIN:
+        org_filter_clause = (
+            Interview.organisation_id == current_user.organisation_id
+            if current_user.organisation_id
+            else True
+        )
+        scheduled_r = await db.execute(
+            select(func.count()).select_from(Interview)
+            .where(org_filter_clause, Interview.status == InterviewStatus.SCHEDULED)
+        )
+        in_progress_r = await db.execute(
+            select(func.count()).select_from(Interview)
+            .where(org_filter_clause, Interview.status == InterviewStatus.IN_PROGRESS)
+        )
+        cancelled_r = await db.execute(
+            select(func.count()).select_from(Interview)
+            .where(org_filter_clause, Interview.status == InterviewStatus.CANCELLED)
+        )
+        avg_r = await db.execute(
+            select(func.avg(Interview.overall_score)).select_from(Interview)
+            .where(org_filter_clause, Interview.overall_score.isnot(None))
+        )
+        # Count distinct interviewers and candidates in org
+        interviewers_r = await db.execute(
+            select(func.count(func.distinct(User.id)))
+            .where(User.organisation_id == current_user.organisation_id,
+                   User.role == UserRole.INTERVIEWER, User.is_active.is_(True))
+        )
+        candidates_r = await db.execute(
+            select(func.count(func.distinct(Interview.candidate_id)))
+            .select_from(Interview)
+            .where(org_filter_clause)
+        )
+
+        avg_score = avg_r.scalar()
+        result.update({
+            "scheduled": scheduled_r.scalar() or 0,
+            "in_progress": in_progress_r.scalar() or 0,
+            "cancelled": cancelled_r.scalar() or 0,
+            "avg_score": round(float(avg_score), 1) if avg_score else 0.0,
+            "total_interviewers": interviewers_r.scalar() or 0,
+            "total_candidates": candidates_r.scalar() or 0,
+        })
+
+    return result
+
+
+@router.patch("/me", response_model=UserOut)
+async def update_me(
+    payload: UserUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Self-edit: users can update their own full_name only."""
+    if payload.full_name is not None:
+        current_user.full_name = payload.full_name
+    await db.flush()
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.organisation), selectinload(User.department))
+        .where(User.id == current_user.id)
+    )
+    return _enrich_user(result.scalar_one())
+
+
 @router.get("/interviewers", response_model=List[UserOut])
 async def list_interviewers(
     department_id: Optional[str] = None,

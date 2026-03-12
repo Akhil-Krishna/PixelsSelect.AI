@@ -19,6 +19,7 @@ const NAV_ITEMS: NavItem[] = [
     { icon: 'fa-gauge', label: 'Dashboard', roles: null },
     { icon: 'fa-calendar-check', label: 'Interviews', roles: null },
     { icon: 'fa-clock', label: 'Upcoming', roles: null },
+    { icon: 'fa-user', label: 'Profile', roles: null },
     { icon: 'fa-building', label: 'Departments', roles: ['admin'] },
     { icon: 'fa-users', label: 'Users', roles: ['admin'] },
 ];
@@ -57,8 +58,19 @@ export function Sidebar({ currentUser, activePage, onNavigate, onLogout }: Sideb
             {/* User Footer */}
             <div className="sidebar-footer">
                 <div className="user-card">
-                    <div className="avatar">{currentUser.full_name[0].toUpperCase()}</div>
-                    <div className="user-info-text">
+                    <div
+                        className="avatar"
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => onNavigate('Profile')}
+                        title="View profile"
+                    >
+                        {currentUser.full_name[0].toUpperCase()}
+                    </div>
+                    <div
+                        className="user-info-text"
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => onNavigate('Profile')}
+                    >
                         <div className="user-name">{currentUser.full_name}</div>
                         <div className="user-role-tag">{currentUser.role.toUpperCase()}</div>
                     </div>

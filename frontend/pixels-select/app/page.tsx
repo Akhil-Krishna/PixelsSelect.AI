@@ -22,6 +22,7 @@ import { ForgotPasswordForm } from '../components/auth/ForgotPasswordForm';
 import { StatsRow } from '../components/dashboard/StatsRow';
 import { InterviewTable } from '../components/dashboard/InterviewTable';
 import { DepartmentPanel } from '../components/dashboard/DepartmentPanel';
+import { ProfilePage } from '../components/dashboard/ProfilePage';
 
 // Modals
 import { ScheduleModal } from '../components/modals/ScheduleModal';
@@ -33,7 +34,7 @@ import { ToastContainer } from '../components/ui/Toast';
 import { RoleBadge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 
-type AppPage = 'Dashboard' | 'Interviews' | 'Upcoming' | 'Departments' | 'Users';
+type AppPage = 'Dashboard' | 'Interviews' | 'Upcoming' | 'Departments' | 'Users' | 'Profile';
 
 // ── Auth Page ──────────────────────────────────────────────────────────────────
 function AuthPage({ onSuccess, initialMode = 'login', onBackToLanding }: { onSuccess: (user: User) => void; initialMode?: 'login' | 'register'; onBackToLanding: () => void }) {
@@ -391,6 +392,14 @@ export default function HomePage() {
               </div>
               <DepartmentPanel />
             </div>
+          )}
+
+          {/* ── Profile ── */}
+          {page === 'Profile' && (
+            <ProfilePage
+              currentUser={currentUser}
+              onUserUpdated={(u) => setCurrentUser(u)}
+            />
           )}
         </div>
       </main>

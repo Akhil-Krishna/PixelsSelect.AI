@@ -32,11 +32,8 @@ const ROLE_LABELS: Record<string, string> = {
     interviewer: 'Interviewer',
 };
 
-const CODING_PROMPT_RE = /\b(coding[\s_-]*question|write code|write (a )?function|implement|algorithm|time complexity|space complexity|debug|code snippet|go ahead with your solution|provide your solution)\b|```/i;
-const isCodingPromptText = (text: string) => {
-    const normalized = (text || '').toLowerCase();
-    return normalized.includes('coding_question:') || CODING_PROMPT_RE.test(normalized);
-};
+const isCodingPromptText = (text: string) =>
+    (text || '').trimStart().startsWith('[CODING_QUESTION]');
 
 export function ChatPanel({
     messages, aiPaused, voiceOn, isRecording, sttStatus, sending,
@@ -73,7 +70,7 @@ export function ChatPanel({
 
                 {messages.map((m, index) => {
                     const isCQ = m.role === 'ai' && isCodingPromptText(m.content);
-                    const content = isCQ ? m.content.replace('CODING_QUESTION:', '').trim() : m.content;
+                    const content = isCQ ? m.content.replace('[CODING_QUESTION]', '').trim() : m.content;
 
                     return (
                         <div key={m.id ?? String(index)} className={`msg ${m.role}`}>

@@ -15,7 +15,6 @@ ENV/
 
 # Environment variables — NEVER commit
 .env
-.env.*
 
 # Database
 *.db
