@@ -123,7 +123,7 @@ async def logout(
     if auth_cookie:
         try:
             from app.core.security import decode_token
-            from app.core.redis_client import RedisClient
+            from app.core.async_redis_client import AsyncRedisClient
             
             payload = decode_token(auth_cookie)
             if payload and payload.get("jti"):
@@ -133,8 +133,8 @@ async def logout(
                 if exp:
                     remaining_ttl = int(exp - time.time())
                     if remaining_ttl > 0:
-                        client = RedisClient.get()
-                        client.setex(f"blocklist:{jti}", remaining_ttl, "1")
+                        client = await AsyncRedisClient.get()
+                        await client.setex(f"blocklist:{jti}", remaining_ttl, "1")
         except Exception:
             # If blocklisting fails, still allow logout (fail gracefully)
             pass

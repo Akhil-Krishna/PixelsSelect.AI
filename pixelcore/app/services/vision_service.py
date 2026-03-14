@@ -242,30 +242,88 @@ class VisionService:
     """
     Façade: selects backend, adds telemetry, and falls back to mock
     if DeepFace is unavailable.
+    
+    Includes retry logic with exponential backoff for transient failures.
     """
 
     _deepface_analyser = DeepFaceAnalyser()
     _mock_analyser = MockAnalyser()
+    
+    # Retry configuration
+    _max_retries = 3
+    _base_delay = 0.5  # seconds
+    _max_delay = 4.0   # seconds
 
     @classmethod
     async def analyze_frame(cls, b64_image: str) -> dict:
+        """
+        Analyze a frame with retry logic and exponential backoff.
+        
+        Retries on transient failures (network issues, DeepFace errors)
+        before falling back to mock analyser.
+        """
         started = time.perf_counter()
         provider = settings.VISION_PROVIDER.lower().strip()
         degraded = False
+        retry_count = 0
+        last_error = None
 
         if provider == "mock":
             result = await cls._mock_analyser.analyze(b64_image)
             provider_used = "mock"
         else:
-            result = await cls._deepface_analyser.analyze(b64_image)
+            # Try with retry logic for deepface
+            while retry_count < cls._max_retries:
+                try:
+                    result = await cls._deepface_analyser.analyze(b64_image)
+                    
+                    # Check if result indicates a transient failure
+                    if result.get("success"):
+                        break
+                    
+                    error = result.get("error", "")
+                    # Retry on certain error types
+                    if error and any(err in str(error).lower() for err in ["timeout", "connection", "memory"]):
+                        last_error = error
+                        retry_count += 1
+                        if retry_count < cls._max_retries:
+                            delay = min(cls._base_delay * (2 ** retry_count), cls._max_delay)
+                            logger.warning(
+                                "Vision analysis retry %d/%d after %.1fs - error: %s",
+                                retry_count, cls._max_retries, delay, error
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                    
+                    # Non-retryable error or max retries reached
+                    break
+                    
+                except Exception as exc:
+                    last_error = str(exc)
+                    retry_count += 1
+                    if retry_count < cls._max_retries:
+                        delay = min(cls._base_delay * (2 ** retry_count), cls._max_delay)
+                        logger.warning(
+                            "Vision analysis exception retry %d/%d after %.1fs - %s",
+                            retry_count, cls._max_retries, delay, exc
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    break
+            
             provider_used = "deepface"
-            if not result.get("success") and str(result.get("error", "")).startswith("Vision libs"):
-                result = await cls._mock_analyser.analyze(b64_image)
-                provider_used = "mock"
-                degraded = True
+            
+            # If all retries failed, fall back to mock
+            if retry_count >= cls._max_retries or not result.get("success"):
+                if str(last_error or "").startswith("Vision libs") or not result.get("success"):
+                    result = await cls._mock_analyser.analyze(b64_image)
+                    provider_used = "mock"
+                    degraded = True
+                    logger.info("Vision analysis degraded to mock after %d retries", retry_count)
 
         result["provider"] = provider_used
         result["degraded"] = degraded
+        result["retry_count"] = retry_count
         result["processing_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
         return result
 

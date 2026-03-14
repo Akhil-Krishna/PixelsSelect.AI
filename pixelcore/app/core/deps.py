@@ -16,12 +16,12 @@ from app.models.user import User, UserRole
 _bearer = HTTPBearer(auto_error=False)
 
 
-def _is_token_blocked(jti: str) -> bool:
-    """Check if a token JTI is in the blocklist using Redis."""
+async def _is_token_blocked(jti: str) -> bool:
+    """Check if a token JTI is in the blocklist using async Redis."""
     try:
-        from app.core.redis_client import RedisClient
-        client = RedisClient.get()
-        return client.exists(f"blocklist:{jti}") > 0
+        from app.core.async_redis_client import AsyncRedisClient
+        client = await AsyncRedisClient.get()
+        return await client.exists(f"blocklist:{jti}") > 0
     except Exception:
         # If Redis is unavailable, allow the request (fail open)
         # In production, ensure Redis is configured
@@ -49,7 +49,7 @@ async def get_current_user(
 
     # Check if token is blocklisted (e.g., after logout)
     jti = payload.get("jti")
-    if jti and _is_token_blocked(jti):
+    if jti and await _is_token_blocked(jti):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token has been revoked")
 
     user_id: Optional[str] = payload.get("sub")

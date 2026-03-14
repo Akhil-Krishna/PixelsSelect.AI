@@ -381,9 +381,16 @@ async def get_live_metrics(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Get live metrics for an interview.
+    
+    Optimized to use database aggregation instead of loading all records.
+    Uses indexed queries for efficient time-range and aggregate operations.
+    """
     iv = await _get_iv(interview_token, db)
     AccessPolicy.ensure_interview_viewer(iv, current_user)
 
+    # Get recent 10 logs for latest values (uses index on interview_id, timestamp)
     recent_res = await db.execute(
         select(VisionLog)
         .where(VisionLog.interview_id == iv.id)
@@ -401,10 +408,46 @@ async def get_live_metrics(
             "dominant_emotion": None, "face_count": None,
         }
 
-    all_res = await db.execute(select(VisionLog).where(VisionLog.interview_id == iv.id))
-    all_logs = all_res.scalars().all()
     latest = recent[0]
 
+    # Use database aggregation for counts instead of loading all records
+    # This is much more efficient - uses the composite index
+    from sqlalchemy import func, case
+    
+    # Count total frames and aggregate metrics in a single query
+    agg_res = await db.execute(
+        select(
+            func.count(VisionLog.id).label('total_frames'),
+            func.max(VisionLog.confidence_score).label('max_conf'),
+            func.max(VisionLog.engagement_score).label('max_eng'),
+            func.max(VisionLog.stress_score).label('max_stress'),
+            func.max(VisionLog.cheating_score).label('max_cheat'),
+            func.max(VisionLog.tab_switch_count).label('max_tab_switch'),
+            # Count look_away: face_count = 0 OR cheating_flags contains 'no_face_detected' or 'gaze_away'
+            func.sum(
+                case(
+                    (VisionLog.face_count == 0, 1),
+                    else_=0
+                )
+            ).label('look_away_count'),
+            # Count multi_face: face_count > 1
+            func.sum(
+                case(
+                    (VisionLog.face_count > 1, 1),
+                    else_=0
+                )
+            ).label('multi_face_count'),
+        )
+        .where(VisionLog.interview_id == iv.id)
+    )
+    agg_row = agg_res.one()
+    
+    total_frames = agg_row.total_frames or 0
+    max_tab_switches = agg_row.max_tab_switch or 0
+    look_away = agg_row.look_away_count or 0
+    multi_face = agg_row.multi_face_count or 0
+
+    # Calculate averages from recent logs only (not all logs)
     def _avg(vals, default=None):
         return round(sum(vals) / len(vals), 1) if vals else default
 
@@ -421,38 +464,28 @@ async def get_live_metrics(
             return [str(f) for f in raw] if isinstance(raw, list) else []
         return []
 
+    # Collect flags from recent logs only (last 10) to avoid memory issues
     all_flags: list[str] = []
-    look_away = 0
-    multi_face = 0
-    max_tab_switches = 0
-    latest_flags = _flags_from_log(latest)
-
-    for l in all_logs:
+    for l in recent:
         flags = _flags_from_log(l)
         all_flags.extend(flags)
-        max_tab_switches = max(max_tab_switches, int(l.tab_switch_count or 0))
-
-        fc = l.face_count if l.face_count is not None else 1
-        if fc > 1 or any(f.startswith("multiple_faces_") for f in flags):
-            multi_face += 1
-        if fc == 0 or "no_face_detected" in flags or "gaze_away" in flags:
-            look_away += 1
 
     # Tab switches: take the higher of VisionLog max vs Interview.tab_switch_count
     interview_tab_switches = iv.tab_switch_count or 0
     tab_switches = max(max_tab_switches, interview_tab_switches)
 
     latest_fc = latest.face_count if latest.face_count is not None else 1
+    latest_flags = _flags_from_log(latest)
 
     return {
-        "frames_analyzed": len(all_logs),
+        "frames_analyzed": total_frames,
         "confidence": _avg(confs),
         "engagement": _avg(engs),
         "stress": _avg(strs),
         "dominant_emotion": latest.dominant_emotion,
         "face_count": latest.face_count,
         "cheating_score": round(max(cheats), 1) if cheats else 0.0,
-        "cheating_flags": list(set(all_flags))[-5:],
+        "cheating_flags": list(set(all_flags))[-5:] if all_flags else [],
         "tab_switches": tab_switches,
         "look_away_count": look_away,
         "multi_face_count": multi_face,

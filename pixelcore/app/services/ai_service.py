@@ -332,6 +332,152 @@ def _mock_evaluation() -> dict:
     }
 
 
+# ── Transcript truncation helpers ─────────────────────────────────────────────
+
+# Common AI acknowledgment phrases to strip from the START of AI messages
+_AI_ACK_PATTERNS = [
+    "nice, that makes sense.",
+    "ya, that's solid.",
+    "cool, i like that approach.",
+    "right, got it.",
+    "alright, sounds good.",
+    "interesting take.",
+    "okay, fair point.",
+    "gotcha.",
+    "sure, that works.",
+    "nice one.",
+    "good point.",
+    "makes sense.",
+    "got it.",
+    "alright.",
+    "sure.",
+    "okay.",
+    "thanks for sharing.",
+    "appreciate that.",
+    "interesting.",
+    "i see.",
+    "right.",
+]
+
+# Maximum settings for transcript
+_MAX_MESSAGES_TO_KEEP = 12  # Keep last 12 message pairs (24 messages total)
+_MAX_TRANSCRIPT_LENGTH = 4000  # Max characters in final transcript
+_SKIP_INITIAL_MESSAGES = 2  # Skip first 2 messages from each role
+
+
+def _strip_ai_acknowledgment(text: str) -> str:
+    """Strip initial acknowledgment phrases from AI response to keep only substantive content."""
+    text_lower = text.lower().strip()
+    
+    for pattern in _AI_ACK_PATTERNS:
+        if text_lower.startswith(pattern):
+            # Find where the actual content starts (after the acknowledgment + possible follow-up)
+            # Look for the next sentence or question
+            remaining = text[len(pattern):].strip()
+            # Skip common transition phrases
+            transition_prefixes = [" ", " — ", ", ", " so ", " then ", " but ", " now "]
+            for prefix in transition_prefixes:
+                if remaining.lower().startswith(prefix.strip()):
+                    remaining = remaining[len(prefix):].strip()
+                    break
+            if remaining:
+                return remaining
+            break
+    
+    return text
+
+
+def _truncate_candidate_response(text: str, max_length: int = 500) -> str:
+    """Truncate candidate response to essential content."""
+    if len(text) <= max_length:
+        return text
+    # Find a sentence boundary near the max length
+    truncated = text[:max_length]
+    last_period = truncated.rfind('. ')
+    last_newline = truncated.rfind('\n')
+    cut = max(last_period, last_newline)
+    if cut > max_length * 0.5:  # Only cut at sentence if we're past 50% of max
+        return text[:cut + 1].strip()
+    return truncated.strip() + "..."
+
+
+def _build_optimized_transcript(messages: List[InterviewMessage]) -> str:
+    """
+    Build an optimized transcript for evaluation:
+    - Skip first 2 messages from each role (initial greetings)
+    - Strip initial acknowledgments from AI messages
+    - Truncate long candidate responses
+    - Keep last N message pairs
+    - Limit total length
+    """
+    # Filter and process messages
+    processed = []
+    
+    # Count messages by role to track initial messages
+    ai_count = 0
+    candidate_count = 0
+    
+    for m in messages:
+        content = m.content
+        if not content:
+            continue
+            
+        if m.role == "ai":
+            ai_count += 1
+            # Skip first 2 AI messages (initial greetings)
+            if ai_count <= _SKIP_INITIAL_MESSAGES:
+                continue
+            # Strip initial acknowledgments to keep substantive content
+            content = _strip_ai_acknowledgment(content)
+            
+        elif m.role == "candidate":
+            candidate_count += 1
+            # Skip first 2 candidate messages (initial introductions)
+            if candidate_count <= _SKIP_INITIAL_MESSAGES:
+                continue
+            # Truncate long responses
+            content = _truncate_candidate_response(content)
+            
+        elif m.role == "interviewer":
+            # Human interviewer messages - keep as is but truncate if too long
+            content = _truncate_candidate_response(content, max_length=300)
+        
+        if content:
+            processed.append((m.role, content, m.code_snippet))
+    
+    # Keep only the last N message pairs
+    if len(processed) > _MAX_MESSAGES_TO_KEEP * 2:
+        processed = processed[-( _MAX_MESSAGES_TO_KEEP * 2):]
+    
+    # Build transcript
+    lines = []
+    for role, content, code_snippet in processed:
+        role_label = "Interviewer" if role == "ai" else ("Human Interviewer" if role == "interviewer" else "Candidate")
+        lines.append(f"{role_label}: {content}")
+        if code_snippet:
+            # Truncate code snippet for transcript
+            code_preview = code_snippet[:200] + "..." if len(code_snippet) > 200 else code_snippet
+            lines.append(f"[Code: {code_preview}]")
+    
+    transcript = "\n".join(lines)
+    
+    # Final length check - truncate if still too long
+    if len(transcript) > _MAX_TRANSCRIPT_LENGTH:
+        transcript = transcript[:_MAX_TRANSCRIPT_LENGTH].rsplit("\n", 1)[0] + "\n[... transcript truncated ...]"
+    
+    logger.info(
+        "transcript_optimized",
+        extra={
+            "event": "transcript_optimization",
+            "original_messages": len(messages),
+            "processed_messages": len(processed),
+            "final_length": len(transcript),
+        },
+    )
+    
+    return transcript
+
+
 # ── Public AI service class ────────────────────────────────────────────────────
 
 class AIService:
@@ -409,10 +555,18 @@ class AIService:
         Generate weighted evaluation scores after interview completion.
         Returns a dict compatible with EvaluationResult schema.
         """
-        transcript = "\n".join(
-            f"{'Interviewer' if m.role == 'ai' else ('Human Interviewer' if m.role == 'interviewer' else 'Candidate')}: {m.content}"
-            + (f"\n[Code: {m.code_snippet[:300]}...]" if m.code_snippet else "")
-            for m in messages
+        # Use optimized transcript builder to reduce length
+        transcript = _build_optimized_transcript(messages)
+        
+        logger.info(
+            "evaluation_started",
+            extra={
+                "event": "evaluation_start",
+                "job_role": interview.job_role,
+                "message_count": len(messages),
+                "transcript_length": len(transcript),
+                "has_resume": bool(interview.resume_text),
+            },
         )
 
         resume_context = ""
@@ -426,9 +580,48 @@ class AIService:
             resume_context=resume_context,
         )
 
-        text = await LLMDispatcher.chat(system, [{"role": "user", "content": prompt}])
-        result = _parse_json_response(text) if text else None
-        if result is None:
+        # Call LLM with detailed logging
+        try:
+            text = await LLMDispatcher.chat(system, [{"role": "user", "content": prompt}])
+            
+            if text is None:
+                logger.error(
+                    "evaluation_llm_returned_none",
+                    extra={
+                        "event": "evaluation_llm_failure",
+                        "job_role": interview.job_role,
+                        "reason": "LLM provider returned None",
+                    },
+                )
+                result = _mock_evaluation()
+            else:
+                logger.info(
+                    "evaluation_llm_response_received",
+                    extra={
+                        "event": "evaluation_llm_response",
+                        "response_length": len(text),
+                        "response_preview": text[:200],
+                    },
+                )
+                result = _parse_json_response(text)
+                if result is None:
+                    logger.error(
+                        "evaluation_json_parse_failed",
+                        extra={
+                            "event": "evaluation_parse_failure",
+                            "raw_response": text[:500],
+                        },
+                    )
+                    result = _mock_evaluation()
+        except Exception as exc:
+            logger.error(
+                "evaluation_exception",
+                extra={
+                    "event": "evaluation_exception",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
             result = _mock_evaluation()
 
         # Enrich with emotion & integrity scores
