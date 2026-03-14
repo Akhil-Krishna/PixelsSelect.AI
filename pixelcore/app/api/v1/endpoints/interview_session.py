@@ -113,7 +113,7 @@ async def verify_candidate(
         candidate.full_name = body.name.strip()
     candidate.is_verified = True
     await db.flush()
-    await db.commit()
+    #await db.commit().   # removed to avoid explicit double commit
 
     # 4. Issue JWT cookie
     token = SecurityService.create_access_token(
@@ -432,10 +432,17 @@ async def get_live_metrics(
         all_flags.extend(flags)
         max_tab_switches = max(max_tab_switches, int(l.tab_switch_count or 0))
 
-        if (l.face_count or 1) > 1 or any(f.startswith("multiple_faces_") for f in flags):
+        fc = l.face_count if l.face_count is not None else 1
+        if fc > 1 or any(f.startswith("multiple_faces_") for f in flags):
             multi_face += 1
-        if (l.face_count or 1) == 0 or "no_face_detected" in flags or "gaze_away" in flags:
+        if fc == 0 or "no_face_detected" in flags or "gaze_away" in flags:
             look_away += 1
+
+    # Tab switches: take the higher of VisionLog max vs Interview.tab_switch_count
+    interview_tab_switches = iv.tab_switch_count or 0
+    tab_switches = max(max_tab_switches, interview_tab_switches)
+
+    latest_fc = latest.face_count if latest.face_count is not None else 1
 
     return {
         "frames_analyzed": len(all_logs),
@@ -446,10 +453,10 @@ async def get_live_metrics(
         "face_count": latest.face_count,
         "cheating_score": round(max(cheats), 1) if cheats else 0.0,
         "cheating_flags": list(set(all_flags))[-5:],
-        "tab_switches": max_tab_switches,
+        "tab_switches": tab_switches,
         "look_away_count": look_away,
         "multi_face_count": multi_face,
-        "gaze_ok": ((latest.face_count or 1) > 0) and ("gaze_away" not in latest_flags),
+        "gaze_ok": (latest_fc > 0) and ("gaze_away" not in latest_flags),
         "ai_paused": iv.ai_paused,
         "status": iv.status.value,
     }

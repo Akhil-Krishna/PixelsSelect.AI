@@ -13,17 +13,14 @@ import { ChatPanel } from '../../../components/interview/ChatPanel';
 import { StartOverlay } from '../../../components/interview/StartOverlay';
 import { CompleteOverlay } from '../../../components/interview/CompleteOverlay';
 
-const VISION_INTERVAL_MS = 2000;
+const VISION_INTERVAL_MS = 4000;
 
 interface ScoreBox { label: string; val: number; color: string; }
 interface CompletedState { title: string; sub: string; scores: ScoreBox[]; }
 
-const CODING_PROMPT_RE = /\b(coding[\s_-]*question|write code|write (a )?function|implement|algorithm|time complexity|space complexity|debug|code snippet|go ahead with your solution|provide your solution)\b|```/i;
 const hasMeaningfulTranscript = (text: string) => /[A-Za-z0-9]/.test(text);
-const isCodingPromptText = (text: string) => {
-    const normalized = (text || '').toLowerCase();
-    return normalized.includes('coding_question:') || CODING_PROMPT_RE.test(normalized);
-};
+const isCodingPromptText = (text: string) =>
+    (text || '').trimStart().startsWith('[CODING_QUESTION]');
 
 export default function InterviewPage() {
     const params = useParams();
@@ -248,7 +245,7 @@ export default function InterviewPage() {
         if (m.role === 'ai') {
             awaitingAiReplyRef.current = false;
             setQCount(q => q + 1);
-            const text = m.content.replace(/CODING_QUESTION:/gi, '').replace(/INTERVIEW_COMPLETE/gi, '').trim();
+            const text = m.content.replace(/\[CODING_QUESTION\]/gi, '').replace(/INTERVIEW_COMPLETE/gi, '').trim();
             if (text) {
                 pendingAutoListen.current = true;
                 // Use ref so we always call the latest speak (avoids stale closure)

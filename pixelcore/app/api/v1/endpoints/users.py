@@ -275,8 +275,11 @@ async def update_user(
 # ── Organisations ─────────────────────────────────────────────────────────────
 
 @org_router.get("", response_model=List[OrgOut])
-async def list_orgs(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)):
-    result = await db.execute(select(Organisation))
+async def list_orgs(db: AsyncSession = Depends(get_db), current_user: User = Depends(require_admin)):
+    query = select(Organisation)
+    if current_user.organisation_id:
+        query = query.where(Organisation.id == current_user.organisation_id)
+    result = await db.execute(query)
     return result.scalars().all()
 
 

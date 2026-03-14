@@ -8,6 +8,7 @@ Providers:
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+import html
 
 from app.core.config import settings
 
@@ -81,6 +82,7 @@ class EmailService:
         interview_title: str,
         scheduled_label: str,
     ) -> str:
+        candidate_name = html.escape(candidate_name)
         return f"""
         <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
           <h2 style="color:#1f2937;">Interview Scheduled</h2>
@@ -103,6 +105,7 @@ class EmailService:
         scheduled_label: str,
         interview_link: str,
     ) -> str:
+        candidate_name = html.escape(candidate_name)
         return f"""
         <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
           <h2 style="color:#1f2937;">Your Interview Link</h2>
