@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # ─── Security ─────────────────────────────────────────────────────────────
     SECRET_KEY: str = "change-me-in-production"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # 1 hour
     # Auth token TTLs
     EMAIL_VERIFICATION_EXPIRE_HOURS: int = 24
     INVITATION_EXPIRE_HOURS: int = 48

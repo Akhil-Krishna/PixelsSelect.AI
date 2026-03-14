@@ -13,14 +13,14 @@ import { ChatPanel } from '../../../components/interview/ChatPanel';
 import { StartOverlay } from '../../../components/interview/StartOverlay';
 import { CompleteOverlay } from '../../../components/interview/CompleteOverlay';
 
-const VISION_INTERVAL_MS = 4000;
+const VISION_INTERVAL_MS = 3000;
 
 interface ScoreBox { label: string; val: number; color: string; }
 interface CompletedState { title: string; sub: string; scores: ScoreBox[]; }
 
 const hasMeaningfulTranscript = (text: string) => /[A-Za-z0-9]/.test(text);
 const isCodingPromptText = (text: string) =>
-    (text || '').trimStart().startsWith('[CODING_QUESTION]');
+    (text || '').includes('[CODING_QUESTION]');
 
 export default function InterviewPage() {
     const params = useParams();
@@ -257,8 +257,8 @@ export default function InterviewPage() {
                 setTextInput(prev => prev.trim() ? prev : '[CODE SUBMITTED]');
                 manualSendRequiredRef.current = true;
                 pendingAutoListen.current = false;
-                if (isListeningRef.current) stopListening();
-                setSttStatus('Coding mode: voice paused');
+                // Keep mic ON (listening) but disable auto-send
+                setSttStatus('🎤 Coding mode: type to send');
             } else if (m.content.includes('INTERVIEW_COMPLETE')) {
                 manualSendRequiredRef.current = false;
             }

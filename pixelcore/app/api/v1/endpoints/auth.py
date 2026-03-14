@@ -3,9 +3,11 @@ Auth endpoints: login, logout, org registration, email verification,
 forgot password, and reset password.
 """
 import logging
+import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -53,7 +55,7 @@ def _set_auth_cookie(response: Response, token: str) -> None:
         httponly=True,
         max_age=_COOKIE_MAX,
         path="/",
-        samesite="lax",
+        samesite="strict",
         secure=not settings.DEBUG,
     )
 
@@ -113,7 +115,30 @@ async def login(
 # ── Logout ────────────────────────────────────────────────────────────────────
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    response: Response,
+    auth_cookie: Optional[str] = Cookie(default=None, alias="access_token"),
+):
+    # Add the token to blocklist if we have a valid token
+    if auth_cookie:
+        try:
+            from app.core.security import decode_token
+            from app.core.redis_client import RedisClient
+            
+            payload = decode_token(auth_cookie)
+            if payload and payload.get("jti"):
+                jti = payload["jti"]
+                # Get remaining TTL from token exp claim
+                exp = payload.get("exp")
+                if exp:
+                    remaining_ttl = int(exp - time.time())
+                    if remaining_ttl > 0:
+                        client = RedisClient.get()
+                        client.setex(f"blocklist:{jti}", remaining_ttl, "1")
+        except Exception:
+            # If blocklisting fails, still allow logout (fail gracefully)
+            pass
+    
     response.delete_cookie("access_token")
     return {"message": "Logged out"}
 
@@ -154,7 +179,9 @@ async def register(request: Request, payload: UserCreate, db: AsyncSession = Dep
 # ── Organisation registration ─────────────────────────────────────────────────
 
 @router.post("/org/register", response_model=OrgRegisterOut, status_code=201)
+@limiter.limit(REGISTER_RATE)
 async def org_register(
+    request: Request,
     payload: OrgRegisterRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
@@ -229,9 +256,6 @@ async def org_register(
     logger.info("Org registered org_id=%s admin=%s", org.id, admin.email)
 
     # Re-load with relationships for response
-    await db.refresh(admin)
-    await db.refresh(org)
-
     result_user = await db.execute(
         select(User).options(selectinload(User.organisation)).where(User.id == admin.id)
     )

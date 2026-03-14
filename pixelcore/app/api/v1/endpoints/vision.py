@@ -2,8 +2,9 @@
 Vision frame analysis and summary endpoints.
 """
 import asyncio
-from typing import Dict, Optional
+from typing import Optional
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -21,7 +22,9 @@ from app.tasks.vision_tasks import analyze_vision_frame_task
 
 router = APIRouter(prefix="/vision", tags=["vision"])
 
-_counters: Dict[str, int] = {}
+# TTLCache auto-evicts entries after ttl seconds (2 hours)
+# This prevents the unbounded memory leak from the previous Dict approach
+_counters: TTLCache = TTLCache(maxsize=10000, ttl=7200)
 _counter_lock = asyncio.Lock()
 
 
@@ -97,6 +100,7 @@ async def analyze_vision_frame(
             tab_switch_count=payload.tab_switch_count,
         ))
         await db.flush()
+        await db.commit()
 
     return result
 

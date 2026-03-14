@@ -113,7 +113,7 @@ async def verify_candidate(
         candidate.full_name = body.name.strip()
     candidate.is_verified = True
     await db.flush()
-    #await db.commit().   # removed to avoid explicit double commit
+    await db.commit()  # removed to avoid explicit double commit
 
     # 4. Issue JWT cookie
     token = SecurityService.create_access_token(

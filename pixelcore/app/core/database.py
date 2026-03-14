@@ -58,6 +58,10 @@ async def init_db() -> None:
     Create all tables that do not yet exist.
     In production prefer Alembic migrations; this is kept for convenience.
     """
+    # In production, use Alembic migrations instead of create_all
+    if settings.APP_ENV == "production":
+        return
+
     # Import models so their metadata is attached to Base before create_all.
     from app.models import user, interview, idempotency, invitation, password_reset, department  # noqa: F401
 

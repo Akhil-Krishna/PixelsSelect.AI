@@ -39,6 +39,9 @@ class SecurityService:
         expire = datetime.now(timezone.utc) + (
             expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         )
+        # Add unique JWT ID (JTI) for token blocklist support
+        if "jti" not in payload:
+            payload["jti"] = secrets.token_urlsafe(16)
         payload["exp"] = expire
         return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 

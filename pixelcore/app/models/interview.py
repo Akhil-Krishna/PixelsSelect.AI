@@ -82,6 +82,7 @@ class Interview(Base):
 
     # Interviewer control
     ai_paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    tab_switch_count: Mapped[int] = mapped_column(Integer, default=0)
     manual_questions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Scores
