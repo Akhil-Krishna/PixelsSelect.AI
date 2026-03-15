@@ -95,6 +95,12 @@ class Interview(Base):
     passed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     ai_feedback: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Evaluation detail (from LLM)
+    strengths: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    weaknesses: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    final_hiring_recommendation: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    recommendation_justification: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Aggregated vision data
     emotion_scores: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     transcript: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

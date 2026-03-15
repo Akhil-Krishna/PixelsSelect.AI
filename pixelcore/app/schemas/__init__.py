@@ -220,6 +220,11 @@ class InterviewOut(BaseModel):
     overall_score: Optional[float] = None
     passed: Optional[bool] = None
     ai_feedback: Optional[str] = None
+    strengths: Optional[List[str]] = None
+    weaknesses: Optional[List[str]] = None
+    final_hiring_recommendation: Optional[str] = None
+    recommendation_justification: Optional[str] = None
+    tab_switch_count: int = 0
     recording_url: Optional[str] = None
     recording_size_bytes: Optional[int] = None
     has_recording: bool = False

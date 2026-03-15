@@ -19,6 +19,10 @@ def _serialize_interview(iv: Interview) -> dict:
         "question_bank": iv.question_bank,
         "resume_text": iv.resume_text,
         "duration_minutes": iv.duration_minutes,
+        "tab_switch_count": getattr(iv, "tab_switch_count", 0) or 0,
+        "candidate_email": iv.candidate.email if iv.candidate else None,
+        "candidate_name": iv.candidate.full_name if iv.candidate else "Unknown",
+        "candidate_id": iv.candidate.id if iv.candidate else None,
     }
 
 
@@ -112,8 +116,7 @@ class InterviewOrchestrator:
         return await run_task_with_fallback(
             generate_final_evaluation_task,
             payload={
-                "job_role": iv.job_role,
-                "resume_text": iv.resume_text,
+                **_serialize_interview(iv),
                 "messages": _serialize_messages(messages),
                 "emotion_data": emotion_data,
                 "cheating_score": cheating_score,

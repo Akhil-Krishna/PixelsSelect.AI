@@ -113,7 +113,7 @@ async def verify_candidate(
         candidate.full_name = body.name.strip()
     candidate.is_verified = True
     await db.flush()
-    await db.commit()  # removed to avoid explicit double commit
+    # get_db() commits the transaction on function return
 
     # 4. Issue JWT cookie
     token = SecurityService.create_access_token(
@@ -216,10 +216,14 @@ async def chat(
     if iv.ai_paused:
         return [MessageOut.model_validate(candidate_msg)]
 
-    # B13: Reload messages to include the just-flushed candidate message
+    # B13: Reload messages, but exclude the just-flushed candidate message
+    # to avoid C1 duplication bug (chat_turn appends it explicitly)
     await db.refresh(iv, ['messages'])
-    msgs = sorted(iv.messages, key=lambda m: m.timestamp)
-    ai_result = await chat_turn(iv, msgs, payload.content, payload.code_snippet)
+    msgs_for_history = [
+        m for m in sorted(iv.messages, key=lambda m: m.timestamp)
+        if m.id != candidate_msg.id
+    ]
+    ai_result = await chat_turn(iv, msgs_for_history, payload.content, payload.code_snippet)
     ai_text = ai_result.get("text", "")
     is_complete = bool(ai_result.get("is_complete"))
 
@@ -314,6 +318,10 @@ async def _run_complete(
     iv.overall_score = evaluation.get("overall_score")
     iv.passed = evaluation.get("passed")
     iv.ai_feedback = evaluation.get("ai_feedback")
+    iv.strengths = evaluation.get("strengths")
+    iv.weaknesses = evaluation.get("weaknesses")
+    iv.final_hiring_recommendation = evaluation.get("final_hiring_recommendation")
+    iv.recommendation_justification = evaluation.get("recommendation_justification")
     iv.emotion_scores = vision_summary
     await db.flush()
 

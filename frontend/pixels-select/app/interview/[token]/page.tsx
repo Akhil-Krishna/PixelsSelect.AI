@@ -118,6 +118,17 @@ export default function InterviewPage() {
     const doneRef = useRef(false);
     const manualSendRequiredRef = useRef(false);
     const awaitingAiReplyRef = useRef(false);
+    
+    // ── TTS Completion Tracking ─────────────────────────────────────────────
+    const ttsCompletedRef = useRef(true); // Track if TTS has finished speaking
+    const interviewCompleteSentRef = useRef(false); // Track if INTERVIEW_COMPLETE was processed
+    
+    // ── Coding Question Timer ───────────────────────────────────────────────
+    const codingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const codingWarningRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const codingStartTimeRef = useRef<number | null>(null);
+    const codingTimeLimitRef = useRef<number>(0); // Time limit in seconds for coding
+    const isCodingQuestionRef = useRef(false); // Track if currently in coding question
 
     const incrementTabSwitch = useCallback(() => {
         const now = Date.now();
@@ -237,6 +248,72 @@ export default function InterviewPage() {
     }, []);
 
 
+    // ── Coding Question Timer Functions ─────────────────────────────────────
+    const startCodingTimer = useCallback((timeLimitSeconds: number) => {
+        // Clear any existing timers
+        if (codingTimerRef.current) clearTimeout(codingTimerRef.current);
+        if (codingWarningRef.current) clearTimeout(codingWarningRef.current);
+        
+        codingStartTimeRef.current = Date.now();
+        codingTimeLimitRef.current = timeLimitSeconds;
+        isCodingQuestionRef.current = true;
+        
+        console.log(`[Coding Timer] Started with ${timeLimitSeconds}s limit`);
+        
+        // Warning at 75% of time
+        const warningDelay = Math.floor(timeLimitSeconds * 0.75 * 1000);
+        codingWarningRef.current = setTimeout(() => {
+            if (!doneRef.current && isCodingQuestionRef.current) {
+                setSttStatus('⚠️ Time almost up! Please submit your solution.');
+                console.log('[Coding Timer] Warning sent at 75%');
+            }
+        }, warningDelay);
+        
+        // Auto-submit at 100% of time
+        const autoSubmitDelay = timeLimitSeconds * 1000;
+        codingTimerRef.current = setTimeout(() => {
+            if (!doneRef.current && isCodingQuestionRef.current) {
+                console.log('[Coding Timer] Auto-submitting code due to timeout');
+                // Auto-submit whatever code the candidate has written
+                if (codeInput.trim() || codeOpen) {
+                    setSttStatus('⏰ Time up! Submitting your solution...');
+                    sendMessageRef.current?.('[AUTO_SUBMIT] Code submission due to time limit');
+                } else {
+                    // No code written - submit empty
+                    setSttStatus('⏰ Time up! Submitting empty solution...');
+                    sendMessageRef.current?.('[AUTO_SUBMIT] No code submitted - time limit reached');
+                }
+                isCodingQuestionRef.current = false;
+            }
+        }, autoSubmitDelay);
+    }, [codeInput, codeOpen]);
+
+    const stopCodingTimer = useCallback(() => {
+        if (codingTimerRef.current) {
+            clearTimeout(codingTimerRef.current);
+            codingTimerRef.current = null;
+        }
+        if (codingWarningRef.current) {
+            clearTimeout(codingWarningRef.current);
+            codingWarningRef.current = null;
+        }
+        codingStartTimeRef.current = null;
+        codingTimeLimitRef.current = 0;
+        isCodingQuestionRef.current = false;
+    }, []);
+
+    // Extract time limit from AI message (format: [CODING_QUESTION] [TIME:5min] ...)
+    const extractCodingTimeLimit = (content: string): number | null => {
+        const timeMatch = content.match(/\[TIME:(\d+)(m|min|minutes|seconds|s)\]/i);
+        if (timeMatch) {
+            const value = parseInt(timeMatch[1], 10);
+            const unit = timeMatch[2].toLowerCase();
+            if (unit.startsWith('m')) return value * 60; // Convert to seconds
+            return value;
+        }
+        return null;
+    };
+
     const addMsg = useCallback((m: Message) => {
         setMessages(prev => {
             if (prev.find(x => x.id === m.id)) return prev;
@@ -245,12 +322,18 @@ export default function InterviewPage() {
         if (m.role === 'ai') {
             awaitingAiReplyRef.current = false;
             setQCount(q => q + 1);
+            
+            // Reset TTS completion tracking for new AI message
+            ttsCompletedRef.current = false;
+            interviewCompleteSentRef.current = false;
+            
             const text = m.content.replace(/\[CODING_QUESTION\]/gi, '').replace(/INTERVIEW_COMPLETE/gi, '').trim();
             if (text) {
                 pendingAutoListen.current = true;
                 // Use ref so we always call the latest speak (avoids stale closure)
                 speakRef.current?.(text);
             }
+            
             const isCodingPrompt = isCodingPromptText(m.content);
             if (isCodingPrompt) {
                 setCodeOpen(true);
@@ -259,13 +342,43 @@ export default function InterviewPage() {
                 pendingAutoListen.current = false;
                 // Keep mic ON (listening) but disable auto-send
                 setSttStatus('🎤 Coding mode: type to send');
+                
+                // Extract time limit from message or calculate based on interview duration
+                const extractedTime = extractCodingTimeLimit(m.content);
+                const duration = session?.duration_minutes || 30;
+                
+                // Calculate default time based on interview duration:
+                // - Short (5-15 min): 1-2 minutes
+                // - Medium (20-30 min): 2-4 minutes  
+                // - Long (45-60 min): 3-5 minutes
+                let defaultTime: number;
+                if (duration <= 15) {
+                    defaultTime = Math.max(60, Math.floor(duration * 60 * 0.15)); // 15% for short
+                } else if (duration <= 30) {
+                    defaultTime = Math.floor(duration * 60 * 0.12); // 12% for medium
+                } else {
+                    defaultTime = Math.floor(duration * 60 * 0.08); // 8% for long (max ~5 min for 60 min interview)
+                }
+                
+                const timeLimit = extractedTime || defaultTime;
+                console.log(`[Coding Timer] Interview duration: ${duration}min, calculated time limit: ${timeLimit}s`);
+                startCodingTimer(timeLimit);
             } else if (m.content.includes('INTERVIEW_COMPLETE')) {
                 manualSendRequiredRef.current = false;
+                stopCodingTimer(); // Stop any coding timer if running
+                interviewCompleteSentRef.current = true;
+                // Don't call endInterview immediately - wait for TTS to complete
+                // The TTS completion will trigger endInterview via onSpeakingDone
             }
-            if (m.content.includes('INTERVIEW_COMPLETE')) setTimeout(endInterview, 1500);
         }
-        if (m.role === 'candidate') setRCount(r => r + 1);
-    }, []);
+        if (m.role === 'candidate') {
+            setRCount(r => r + 1);
+            // If candidate submits code, stop the coding timer
+            if (isCodingQuestionRef.current && m.code_snippet) {
+                stopCodingTimer();
+            }
+        }
+    }, [session, startCodingTimer, stopCodingTimer]);
 
 
     // ── STT (Whisper) ─────────────────────────────────────────────────────────
@@ -468,11 +581,24 @@ export default function InterviewPage() {
         const onSpeakingDone = () => {
             if (seq !== ttsSeq.current) return;
             isTtsSpeaking.current = false;
+            ttsCompletedRef.current = true; // Mark TTS as completed
             setSttStatus('');
             const tile = document.getElementById('tile-ai');
             if (tile) tile.style.borderColor = '#334155';
+            
+            // Check if this was the INTERVIEW_COMPLETE message - end interview after TTS finishes
+            if (interviewCompleteSentRef.current && !doneRef.current) {
+                console.log('[TTS] INTERVIEW_COMPLETE message finished speaking, ending interview...');
+                // Small delay to ensure smooth transition
+                setTimeout(() => {
+                    if (!doneRef.current) {
+                        endInterview();
+                    }
+                }, 500);
+                return;
+            }
+            
             if (pendingAutoListen.current && voiceOnRef.current) {
-
                 pendingAutoListen.current = false;
                 startListening();
             }
@@ -886,6 +1012,9 @@ export default function InterviewPage() {
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
             if (visionRef.current) clearInterval(visionRef.current);
+            // Cleanup coding timer
+            if (codingTimerRef.current) clearTimeout(codingTimerRef.current);
+            if (codingWarningRef.current) clearTimeout(codingWarningRef.current);
             window.speechSynthesis?.cancel();
             stopBackendTtsAudio();
             camStream.current?.getTracks().forEach(t => t.stop());

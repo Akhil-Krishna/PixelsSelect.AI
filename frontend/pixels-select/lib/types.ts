@@ -43,14 +43,22 @@ export interface Interview {
     code_score?: number;
     emotion_score?: number;
     integrity_score?: number;
+    cheating_score?: number;
     ai_feedback?: string;
+    strengths?: string[];
+    weaknesses?: string[];
+    final_hiring_recommendation?: string;
+    recommendation_justification?: string;
+    tab_switch_count?: number;
     has_recording?: boolean;
     resume_path?: string;
     passed?: boolean;
     ai_paused?: boolean;
     started_at?: string;
+    ended_at?: string;
     department_id?: string;
     is_assigned?: boolean;
+    [key: string]: unknown;
 }
 
 export interface Message {
