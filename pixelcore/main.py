@@ -129,10 +129,125 @@ async def lifespan(app: FastAPI):
 
     cleanup_task = asyncio.create_task(_idempotency_cleanup_loop())
 
+    # F1/F2: Reap stale IN_PROGRESS interviews that exceeded their time limit.
+    # Catches cases where the candidate's browser crashed, lost internet, or
+    # HR paused AI and the candidate never returned.
+    async def _stale_interview_reaper_loop():
+        from datetime import timedelta, timezone
+        from sqlalchemy import select as sa_select, and_
+        from app.models.interview import Interview, InterviewStatus, InterviewMessage, VisionLog
+        from app.services.interview_orchestrator import complete_interview_evaluation
+        from app.services.vision_service import aggregate_vision_logs
+
+        _BUFFER_MINUTES = 5  # Grace period beyond scheduled duration
+        _INTERVAL_SECONDS = 60
+
+        while True:
+            await asyncio.sleep(_INTERVAL_SECONDS)
+            try:
+                async with AsyncSessionLocal() as session:
+                    from datetime import datetime as dt
+                    now = dt.now(timezone.utc)
+
+                    # Find IN_PROGRESS interviews past their deadline
+                    result = await session.execute(
+                        sa_select(Interview).where(
+                            and_(
+                                Interview.status == InterviewStatus.IN_PROGRESS,
+                                Interview.started_at.isnot(None),
+                            )
+                        )
+                    )
+                    stale = []
+                    for iv in result.scalars().all():
+                        started = iv.started_at
+                        if started.tzinfo is None:
+                            started = started.replace(tzinfo=timezone.utc)
+                        deadline = started + timedelta(
+                            minutes=iv.duration_minutes + _BUFFER_MINUTES
+                        )
+                        if now > deadline:
+                            stale.append(iv)
+
+                    for iv in stale:
+                        logger = logging.getLogger(__name__)
+                        logger.info(
+                            "Reaping stale interview id=%s (started_at=%s, duration=%dmin)",
+                            iv.id, iv.started_at, iv.duration_minutes,
+                        )
+                        try:
+                            # Load messages and vision logs for evaluation
+                            msgs_result = await session.execute(
+                                sa_select(InterviewMessage)
+                                .where(InterviewMessage.interview_id == iv.id)
+                                .order_by(InterviewMessage.timestamp)
+                            )
+                            msgs = list(msgs_result.scalars().all())
+
+                            logs_result = await session.execute(
+                                sa_select(VisionLog)
+                                .where(VisionLog.interview_id == iv.id)
+                                .order_by(VisionLog.timestamp)
+                            )
+                            vision_logs = list(logs_result.scalars().all())
+                            vision_summary = aggregate_vision_logs(vision_logs) if vision_logs else None
+
+                            final_cheating = None
+                            if vision_logs:
+                                final_cheating = round(float(max(l.cheating_score for l in vision_logs)), 1)
+
+                            # Load relationships needed by orchestrator
+                            from sqlalchemy.orm import selectinload
+                            iv_full = await session.execute(
+                                sa_select(Interview).options(
+                                    selectinload(Interview.candidate),
+                                    selectinload(Interview.hr),
+                                ).where(Interview.id == iv.id)
+                            )
+                            iv = iv_full.scalar_one()
+
+                            evaluation = await complete_interview_evaluation(
+                                iv, msgs, vision_summary, final_cheating
+                            )
+
+                            iv.status = InterviewStatus.COMPLETED
+                            iv.ended_at = dt.now(timezone.utc)
+                            iv.answer_score = evaluation.get("answer_score")
+                            iv.code_score = evaluation.get("code_score")
+                            iv.emotion_score = evaluation.get("emotion_score")
+                            iv.integrity_score = evaluation.get("integrity_score")
+                            iv.cheating_score = evaluation.get("cheating_score")
+                            iv.overall_score = evaluation.get("overall_score")
+                            iv.passed = evaluation.get("passed")
+                            iv.ai_feedback = evaluation.get("ai_feedback")
+                            iv.strengths = evaluation.get("strengths")
+                            iv.weaknesses = evaluation.get("weaknesses")
+                            iv.final_hiring_recommendation = evaluation.get("final_hiring_recommendation")
+                            iv.recommendation_justification = evaluation.get("recommendation_justification")
+                            iv.emotion_scores = vision_summary
+                            await session.flush()
+                            logger.info("Reaped interview id=%s — evaluation complete", iv.id)
+                        except Exception as eval_err:
+                            # If evaluation fails, still mark as completed to avoid infinite retries
+                            logger.error("Evaluation failed for stale interview %s: %s", iv.id, eval_err)
+                            iv.status = InterviewStatus.COMPLETED
+                            iv.ended_at = dt.now(timezone.utc)
+                            iv.ai_feedback = "Interview auto-completed (candidate disconnected). Evaluation unavailable."
+                            await session.flush()
+
+                    if stale:
+                        await session.commit()
+
+            except Exception as e:
+                logging.getLogger(__name__).warning("Stale interview reaper error: %s", e)
+
+    reaper_task = asyncio.create_task(_stale_interview_reaper_loop())
+
     yield
 
-    # Cancel cleanup on shutdown
+    # Cancel background tasks on shutdown
     cleanup_task.cancel()
+    reaper_task.cancel()
 
     try:
         import app.core.async_redis_client as _arc

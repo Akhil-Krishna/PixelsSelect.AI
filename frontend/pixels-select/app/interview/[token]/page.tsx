@@ -97,6 +97,7 @@ export default function InterviewPage() {
     const [gaze, setGaze] = useState('OK');
     const [emotion, setEmotion] = useState('–');
     const [aiPaused, setAiPaused] = useState(false);
+    const [tabBlocked, setTabBlocked] = useState(false);
 
     // ── Refs ──────────────────────────────────────────────────────────────────
     const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -119,6 +120,8 @@ export default function InterviewPage() {
     const doneRef = useRef(false);
     const manualSendRequiredRef = useRef(false);
     const awaitingAiReplyRef = useRef(false);
+    const msgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const lastPollMsgIdRef = useRef<string | null>(null);
     
     // ── TTS Completion Tracking ─────────────────────────────────────────────
     const ttsCompletedRef = useRef(true); // Track if TTS has finished speaking
@@ -1011,6 +1014,7 @@ export default function InterviewPage() {
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
             if (visionRef.current) clearInterval(visionRef.current);
+            if (msgPollRef.current) clearInterval(msgPollRef.current);
             // Cleanup coding timer
             if (codingTimerRef.current) clearTimeout(codingTimerRef.current);
             if (codingWarningRef.current) clearTimeout(codingWarningRef.current);
@@ -1062,6 +1066,33 @@ export default function InterviewPage() {
             setVerifyLoading(false);
         }
     };
+
+    // ── F3: Poll for new messages (HR interviewer questions) ────────────────────
+    // Seed the poll cursor whenever messages change (outside the interval effect)
+    useEffect(() => {
+        if (messages.length) {
+            lastPollMsgIdRef.current = messages[messages.length - 1].id;
+        }
+    }, [messages]);
+
+    useEffect(() => {
+        if (!started || completed) return;
+        msgPollRef.current = setInterval(async () => {
+            try {
+                const path = `/interview-session/messages/${token}${
+                    lastPollMsgIdRef.current ? '?since_id=' + lastPollMsgIdRef.current : ''
+                }`;
+                const msgs = await apiCall<Message[]>('GET', path);
+                if (msgs?.length) {
+                    msgs.forEach(addMsg);
+                    lastPollMsgIdRef.current = msgs[msgs.length - 1].id;
+                }
+            } catch { /* network glitch — retry next interval */ }
+        }, 3000);
+        return () => {
+            if (msgPollRef.current) { clearInterval(msgPollRef.current); msgPollRef.current = null; }
+        };
+    }, [started, completed, token, addMsg]);
 
     // ── Focus/visibility tracking: tab switches + window/app switches ─────────
     useEffect(() => {
@@ -1158,6 +1189,44 @@ export default function InterviewPage() {
             startListening();
         }
     };
+
+    // ── F5: Prevent multiple tabs from running the same interview ──────────────
+    useEffect(() => {
+        if (typeof BroadcastChannel === 'undefined') return; // unsupported browser
+        const channel = new BroadcastChannel(`interview-${token}`);
+        // Announce presence
+        channel.postMessage({ type: 'claim' });
+        const handler = (e: MessageEvent) => {
+            if (e.data?.type === 'claim') {
+                // Another tab just opened — tell it we're here
+                channel.postMessage({ type: 'already_active' });
+            } else if (e.data?.type === 'already_active') {
+                // We are the newcomer — block ourselves
+                setTabBlocked(true);
+            }
+        };
+        channel.addEventListener('message', handler);
+        return () => {
+            channel.removeEventListener('message', handler);
+            channel.close();
+        };
+    }, [token]);
+
+    // ── Tab blocked screen ────────────────────────────────────────────────────
+    if (tabBlocked) {
+        return (
+            <div className="start-ov">
+                <div className="start-card" style={{ textAlign: 'center', maxWidth: 420 }}>
+                    <div style={{ fontSize: 48, marginBottom: 10 }}>⚠️</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Interview Already Open</div>
+                    <div style={{ fontSize: 14, color: 'var(--muted)', lineHeight: 1.6 }}>
+                        This interview is already running in another tab.
+                        Please close this tab and return to the original one.
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     // ── Verification form (magic-link candidates) ────────────────────────────
     if (needsVerify) {
