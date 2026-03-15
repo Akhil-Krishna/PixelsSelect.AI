@@ -54,6 +54,9 @@ export default function InterviewPage() {
     const [codeLang, setCodeLang] = useState('python');
     const [codeOpen, setCodeOpen] = useState(false);
     const [sending, setSending] = useState(false);
+    // Refs for coding timer (avoids stale closures when timer fires minutes later)
+    const codeInputRef = useRef('');
+    const codeOpenRef = useRef(false);
 
     // ── Voice / STT ───────────────────────────────────────────────────────────
     const [voiceOn, setVoiceOn] = useState(true);
@@ -274,8 +277,9 @@ export default function InterviewPage() {
         codingTimerRef.current = setTimeout(() => {
             if (!doneRef.current && isCodingQuestionRef.current) {
                 console.log('[Coding Timer] Auto-submitting code due to timeout');
-                // Auto-submit whatever code the candidate has written
-                if (codeInput.trim() || codeOpen) {
+                // Use refs (not state) — timer fires minutes after creation,
+                // state values would be stale by then.
+                if (codeInputRef.current.trim() || codeOpenRef.current) {
                     setSttStatus('⏰ Time up! Submitting your solution...');
                     sendMessageRef.current?.('[AUTO_SUBMIT] Code submission due to time limit');
                 } else {
@@ -286,7 +290,7 @@ export default function InterviewPage() {
                 isCodingQuestionRef.current = false;
             }
         }, autoSubmitDelay);
-    }, [codeInput, codeOpen]);
+    }, []);  // No state deps — uses only refs
 
     const stopCodingTimer = useCallback(() => {
         if (codingTimerRef.current) {
@@ -734,6 +738,9 @@ export default function InterviewPage() {
 
     // Keep ref pointing to the latest sendMessage so startListening (empty-dep) never closes over a stale version
     useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
+    // Keep coding-timer refs in sync with state
+    useEffect(() => { codeInputRef.current = codeInput; }, [codeInput]);
+    useEffect(() => { codeOpenRef.current = codeOpen; }, [codeOpen]);
 
     // ── End interview ─────────────────────────────────────────────────────────
     const endInterview = useCallback(async () => {

@@ -27,121 +27,6 @@ from app.models.interview import Interview, InterviewMessage
 logger = logging.getLogger(__name__)
 
 # ── System prompt ─────────────────────────────────────────────────────────────
-# _SYSTEM_PROMPT = """\
-# You are a senior {job_role} interviewer at a real tech company. You are conducting \
-# a live technical interview over chat. Your persona is friendly, curious, and professional — \
-# like a real human who genuinely wants to understand the candidate's abilities.
-# -Never provide answers back to candidate
-# ═══════════════════════════════════════════════════════
-# PERSONALITY & TONE
-# ═══════════════════════════════════════════════════════
-# - Talk like a REAL person. Use natural language, not corporate-speak.
-# - Give QUICK, GENUINE feedback after each answer — 1 sentence max. Examples:
-#   Good answers: "Nice, that makes sense." / "Ya, that's solid." / "Cool, I like that approach."
-#   / "Right, got it." / "Alright, sounds good." / "Interesting take." / "Okay, fair point."
-#   / "Gotcha." / "Sure, that works." / "Nice one."
-#   Weak/wrong answers: "Hmm, not quite." / "That's one way, but what about..." / 
-#   "Not exactly — think about the edge case where..." / "Close, but consider..." /
-#   "That's not quite right. What if we..." / "Not that one, try thinking about..."
-# - NEVER repeat the same feedback twice in a row.
-# - NEVER say "Great question!" or "That's a great answer!" — those sound robotic.
-# - If candidate gives a good answer, briefly acknowledge AND ask a follow-up question to dig deeper.
-# - If candidate gives a weak/wrong answer, DON'T correct them — just probe gently or move on.
-# - Keep responses SHORT — 1 to 3 sentences max. Think of how a real interviewer chats.
-
-# ═══════════════════════════════════════════════════════
-# ABSOLUTE RULES
-# ═══════════════════════════════════════════════════════
-# 1. Ask ONE question at a time. Never batch multiple questions.
-# 2. NEVER teach, lecture, or explain concepts. You are evaluating, not tutoring.
-# 3. NEVER give away the answer to a question — not even hints that reveal the solution.
-# 4. NEVER list bullet points or use markdown headers. Talk in natural sentences.
-# 5. NEVER reveal that you're an AI. Behave as if you're a human interviewer.
-# 6. If the candidate asks you to explain something, briefly clarify the question itself, \
-# but do NOT give away the answer or teach the concept.
-
-# ═══════════════════════════════════════════════════════
-# INTERVIEW FLOW
-# ═══════════════════════════════════════════════════════
-# - KEEP THE INTERVIEW GOING until the prescribed {duration_minutes} minutes are nearly up, \
-# as long as the candidate is responding and answering questions.
-# - Only wrap up early if: (a) time is almost over, OR (b) candidate is not responding at all.
-# - When candidate does well, ask follow-up questions to test depth of knowledge.
-
-# ═══════════════════════════════════════════════════════
-# INTERVIEW STRUCTURE (adapt timing to {duration_minutes} minutes)
-# ═══════════════════════════════════════════════════════
-# Phase 1 — WARM-UP (1-2 exchanges)
-#   Start casually: "Hey, thanks for joining. Before we get into the technical stuff, \
-# could you tell me a bit about yourself?" Follow up on something they mentioned.
-
-# Phase 2 — CS FUNDAMENTALS (30%)
-#   Ask about core computer science and practical engineering topics, naturally woven in:
-#   - Data structures: "If you had to pick between a hash map and a BST for this use case, \
-# which would you go with and why?"
-#   - Algorithms / complexity: "Walk me through how you'd approach sorting X — and what's \
-# the time complexity you'd aim for?"
-#   - OS / Networking / Databases: "Can you explain what happens behind the scenes when \
-# you type a URL in a browser?" or "Tell me about database indexing — when would you NOT \
-# add an index?"
-#   - Version control: "How do you handle merge conflicts on a team? What's your Git workflow \
-# like?" or "What's the difference between rebase and merge, and when do you prefer each?"
-
-# Phase 3 — ROLE-SPECIFIC DEEP DIVE (20% ,from question bank if provided, extra 40% questions based on role)
-#   Pick the most relevant questions from the question bank. Adapt difficulty to the \
-# candidate's level based on their earlier answers.
-#   Transition naturally: "Alright, let's dive a bit deeper into {job_role} territory."
-
-# Phase 4 — CODING (1 problem, 2 only if time allows)
-#   Start the ENTIRE message with: [CODING_QUESTION]
-#   IMPORTANT: Calculate time allocation based on the interview duration ({duration_minutes} minutes):
-#     - For short interviews (5-15 min): allocate 1-2 minutes max
-#     - For medium interviews (20-30 min): allocate 2-4 minutes
-#     - For longer interviews (45-60 min): allocate 3-5 minutes
-#     - ALWAYS include a time hint in format [TIME:Xmin] where X is your allocated minutes
-#   Example for 30min interview: "[CODING_QUESTION] [TIME:3min] Write a function that..."
-#   Give a clear, self-contained problem. Keep it practical and role-relevant when possible.
-#   After they submit code, briefly acknowledge it and ask about trade-offs or edge cases.
-
-# Phase 5 — PRACTICAL SCENARIO (10%)
-#   Ask a system design or real-world problem-solving question relevant to the role.
-#   "Say you're designing a notification system that needs to handle 10K messages per second — \
-# how would you architect that?"
-
-# Phase 6 — WRAP-UP (2 steps)
-#   Only wrap up if time duration is almost over or candidate is not at all answering properly
-#   STEP A (do NOT use INTERVIEW_COMPLETE):
-#     Wind down naturally: "Alright, that wraps up the technical portion on my end. \
-# Is there anything you'd like to ask me — about the role, the team, or anything else?"
-#     Wait for their reply and give a brief, warm acknowledgement.
-
-#   STEP B (ONLY after they reply to step A):
-#     Start the ENTIRE message with: INTERVIEW_COMPLETE
-#     Then write a warm, personalised 3-5 sentence conclusion:
-#     - Thank them sincerely
-#     - Mention the specific role
-#     - Highlight 1-2 positive things you noticed
-#     - Explain next steps
-#     - End with a genuine farewell
-
-# ═══════════════════════════════════════════════════════
-# FORMAT RULES
-# ═══════════════════════════════════════════════════════
-# - Coding question → start message with: [CODING_QUESTION]
-# - End of interview → start message with: INTERVIEW_COMPLETE
-# - Everything else → plain conversational text, no formatting
-
-# ═══════════════════════════════════════════════════════
-# CONTEXT
-# ═══════════════════════════════════════════════════════
-# Job Role         : {job_role}
-# Question number  : {q_num}
-# Interview length : {duration_minutes} min
-
-# {question_bank_context}
-
-# {resume_context}\
-# """
 
 _SYSTEM_PROMPT = """
 You are a senior {job_role} interviewer at a real tech company conducting a live technical interview over chat.
@@ -236,7 +121,6 @@ Everything else → normal conversational text.
 
 ════════ CONTEXT ════════
 Role: {job_role}  
-Question #: {q_num}  
 Interview length: {duration_minutes} minutes
 
 {question_bank_context}
@@ -247,7 +131,7 @@ Interview length: {duration_minutes} minutes
 # Simplified evaluation prompt - LLM only provides essential scores and feedback
 # All detailed fields are filled in by code using existing data
 _EVAL_PROMPT = """\
-You are an expert technical interview evaluator. Evaluate this interview transcript and provide essential scores and feedback.
+You are an expert technical interview evaluator. Evaluate this interview transcript and provide scores and feedback.
 
 Position: {job_role}
 Interview Duration: {duration_minutes} minutes
@@ -260,7 +144,8 @@ Transcript:
 
 Scoring guidelines:
 - answer_score: Rate the quality of the candidate's answers to non-coding questions (0-100).
-- code_score: If the candidate submitted code, evaluate it for correctness, time/space complexity, edge case handling, and code style. If no coding was done, set to null.
+- code_score: If the candidate submitted code, evaluate correctness, complexity, edge cases, and style (0-100). If no coding was done, set to null.
+- Performance scores: Rate each category 1-10 based on what the transcript actually shows.
 - Keep string values concise (under 40 words each).
 
 Respond with ONLY a valid JSON object — no markdown, no backticks, no explanation:
@@ -268,6 +153,13 @@ Respond with ONLY a valid JSON object — no markdown, no backticks, no explanat
 {{
   "answer_score": <integer 0-100>,
   "code_score": <integer 0-100 or null if no coding was done>,
+  "performance": {{
+    "technical_knowledge": <integer 1-10>,
+    "problem_solving": <integer 1-10>,
+    "coding_ability": <integer 1-10 or 5 if no coding>,
+    "communication_clarity": <integer 1-10>,
+    "practical_engineering": <integer 1-10>
+  }},
   "strengths": ["strength 1", "strength 2", "strength 3"],
   "weaknesses": ["weakness 1", "weakness 2"],
   "ai_feedback": "2-3 sentences summarizing overall performance",
@@ -405,10 +297,14 @@ def _build_history(messages: List[InterviewMessage]) -> List[dict]:
         content = m.content
         if m.code_snippet:
             content += f"\n\n[CODE SUBMITTED]\n```\n{m.code_snippet}\n```"
-        result.append({
-            "role": "user" if m.role in ("candidate", "interviewer") else "assistant",
-            "content": content,
-        })
+        if m.role == "interviewer":
+            # Human interviewer messages: use system role so the LLM
+            # can distinguish them from candidate responses.
+            result.append({"role": "system", "content": f"[Human Interviewer]: {content}"})
+        elif m.role == "candidate":
+            result.append({"role": "user", "content": content})
+        else:  # ai
+            result.append({"role": "assistant", "content": content})
     return result
 
 
@@ -544,8 +440,8 @@ _AI_ACK_PATTERNS = [
 
 # Maximum settings for transcript
 _MAX_MESSAGES_TO_KEEP = 12  # Keep last 12 message pairs (24 messages total)
-_MAX_TRANSCRIPT_LENGTH = 4000  # Max characters in final transcript
-_SKIP_INITIAL_MESSAGES = 2  # Skip first 2 messages from each role
+_MAX_TRANSCRIPT_LENGTH = 6000  # Max characters in final transcript
+_SKIP_INITIAL_MESSAGES = 1  # Skip first greeting from each role
 
 
 def _strip_ai_acknowledgment(text: str) -> str:
@@ -682,8 +578,6 @@ class AIService:
         Returns:
             (text, is_complete) — is_complete is True when INTERVIEW_COMPLETE prefix found.
         """
-        q_num = sum(1 for m in messages if m.role == "ai") + 1
-
         # Build question bank context
         qb_context = ""
         if interview.question_bank:
@@ -708,7 +602,6 @@ class AIService:
 
         system = _SYSTEM_PROMPT.format(
             job_role=interview.job_role,
-            q_num=q_num,
             duration_minutes=interview.duration_minutes,
             question_bank_context=qb_context,
             resume_context=resume_context,
@@ -723,7 +616,8 @@ class AIService:
         text = await LLMDispatcher.chat(system, history)
         if text is None:
             logger.warning("LLM provider unavailable — using mock response")
-            text = _mock_interview_response(q_num, interview.job_role)
+            mock_q = sum(1 for m in messages if m.role == "ai") + 1
+            text = _mock_interview_response(mock_q, interview.job_role)
 
         return text, "INTERVIEW_COMPLETE" in text
 
@@ -813,7 +707,8 @@ class AIService:
                         extra={"event": "evaluation_parse_retry"},
                     )
                     retry_system = (
-                        "You are a JSON generator. Output ONLY a valid JSON object. "
+                        "You are an expert technical interview evaluator. "
+                        "Output ONLY a valid JSON object. "
                         "No explanation, no markdown. Keep string values short (under 50 words each)."
                     )
                     text2 = await LLMDispatcher.chat(
@@ -954,30 +849,34 @@ def _build_comprehensive_report(
     else:
         overall_result = "Fail"
     
-    # Build performance breakdown
+    # Build performance breakdown — use LLM-provided scores if available,
+    # fall back to derived values from answer_score/code_score.
     answer_score_10 = max(1, min(10, int(answer_score / 10)))
     code_score_10 = int(code_score / 10) if code_score is not None else 5
-    
+    llm_perf = result.get("performance") or {}
+
+    def _perf_score(key: str, fallback: int) -> int:
+        """Read LLM score (1-10), clamped, with a derived fallback."""
+        val = llm_perf.get(key)
+        if val is not None:
+            return max(1, min(10, int(val)))
+        return max(1, min(10, fallback))
+
     performance_breakdown = {
         "technical_knowledge": {
-            "score": answer_score_10,
-            "explanation": _generate_performance_explanation(answer_score, "technical knowledge")
+            "score": _perf_score("technical_knowledge", answer_score_10),
         },
         "problem_solving": {
-            "score": max(1, min(10, answer_score_10 + (1 if answer_score > 60 else -1))),
-            "explanation": _generate_performance_explanation(answer_score, "problem solving")
+            "score": _perf_score("problem_solving", answer_score_10 + (1 if answer_score > 60 else -1)),
         },
         "coding_ability": {
-            "score": code_score_10,
-            "explanation": _generate_performance_explanation(code_score * 10 if code_score else 50, "coding ability")
+            "score": _perf_score("coding_ability", code_score_10),
         },
         "communication_clarity": {
-            "score": max(1, min(10, answer_score_10 + (1 if answer_score > 50 else 0))),
-            "explanation": _generate_performance_explanation(answer_score, "communication clarity")
+            "score": _perf_score("communication_clarity", answer_score_10 + (1 if answer_score > 50 else 0)),
         },
         "practical_engineering_thinking": {
-            "score": max(1, min(10, answer_score_10)),
-            "explanation": _generate_performance_explanation(answer_score, "practical engineering thinking")
+            "score": _perf_score("practical_engineering", answer_score_10),
         }
     }
     
@@ -1049,19 +948,6 @@ def _build_comprehensive_report(
     return comprehensive
 
 
-def _generate_performance_explanation(score: float, category: str) -> str:
-    """Generate a brief explanation for a performance category."""
-    if score >= 80:
-        return f"Excellent {category} demonstrated throughout the interview."
-    elif score >= 70:
-        return f"Good {category} with room for minor improvements."
-    elif score >= 60:
-        return f"Adequate {category} for the role requirements."
-    elif score >= 50:
-        return f"Basic {category} - needs further development."
-    else:
-        return f"Limited {category} - requires significant improvement."
-
 
 def _extract_sample_qa(messages: List[InterviewMessage]) -> list:
     """Extract 2-3 representative Q/A pairs from the interview."""
@@ -1073,7 +959,7 @@ def _extract_sample_qa(messages: List[InterviewMessage]) -> list:
             answer = messages[i + 1].content
             
             # Skip system messages
-            if question.startswith("[") or "INTERVIEW_COMPLETE" in question:
+            if question.startswith("[CODING_QUESTION]") or "INTERVIEW_COMPLETE" in question:
                 continue
             
             # Truncate long content
@@ -1085,7 +971,7 @@ def _extract_sample_qa(messages: List[InterviewMessage]) -> list:
             qa_pairs.append({
                 "question": question,
                 "answer": answer,
-                "evaluation": "Candidate provided a relevant response to the technical question."
+                "evaluation": None,  # Actual evaluation is done by the LLM
             })
             
             if len(qa_pairs) >= 3:
