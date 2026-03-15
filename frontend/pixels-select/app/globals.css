@@ -1455,8 +1455,8 @@ textarea {
 .landing-brand-icon {
   width: 36px;
   height: 36px;
-  background: linear-gradient(135deg, #818CF8, #6D28D9);
-  border-radius: 10px;
+  background: linear-gradient(135deg, #522222, #15062c);
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;

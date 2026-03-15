@@ -49,9 +49,6 @@ class CandidateVerifyRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
 
 
-class CandidateRegisterRequest(BaseModel):
-    """Optional post-interview account creation."""
-    password: str = Field(..., min_length=8)
 
 
 # ─── Department ──────────────────────────────────────────────────────────────

@@ -134,6 +134,15 @@ async def lifespan(app: FastAPI):
     # Cancel cleanup on shutdown
     cleanup_task.cancel()
 
+    try:
+        import app.core.async_redis_client as _arc
+        if _arc._client:
+            await _arc._client.aclose()
+        if _arc._pool:
+            await _arc._pool.aclose()
+    except Exception as e:
+        logging.getLogger(__name__).debug("Redis pool close error: %s", e)
+
 
 # ── Application factory ────────────────────────────────────────────────────────
 app = FastAPI(

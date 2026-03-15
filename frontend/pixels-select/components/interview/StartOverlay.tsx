@@ -6,9 +6,11 @@ interface StartOverlayProps {
     loading: boolean;
     error?: string;
     onStart: () => void;
+    cameraReady?: boolean;
+    micReady?: boolean;
 }
 
-export function StartOverlay({ title, jobRole, durationMin, previewRef, loading, error, onStart }: StartOverlayProps) {
+export function StartOverlay({ title, jobRole, durationMin, previewRef, loading, error, onStart, cameraReady = true, micReady = true }: StartOverlayProps) {
     return (
         <div className="start-ov">
             <div className="start-card">
@@ -25,8 +27,18 @@ export function StartOverlay({ title, jobRole, durationMin, previewRef, loading,
 
                 {/* Readiness checklist */}
                 <div className="checklist">
-                    <CheckItem icon="fa-video" color="var(--success)" label="Camera access" />
-                    <CheckItem icon="fa-microphone" color="var(--success)" label="Microphone (Whisper STT)" />
+                    <CheckItem 
+                        icon="fa-video" 
+                        color={cameraReady ? "var(--success)" : "var(--warning)"} 
+                        label="Camera access" 
+                        status={cameraReady ? "ok" : "warn"} 
+                    />
+                    <CheckItem 
+                        icon="fa-microphone" 
+                        color={micReady ? "var(--success)" : "var(--warning)"} 
+                        label="Microphone (Whisper STT)" 
+                        status={micReady ? "ok" : "warn"} 
+                    />
                     <CheckItem icon="fa-wifi" color="var(--success)" label="Connection ready" />
                     <CheckItem icon="fa-shield-halved" color="var(--success)" label="Integrity monitoring active" />
                 </div>

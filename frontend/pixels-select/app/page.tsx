@@ -50,8 +50,8 @@ function AuthPage({ onSuccess, initialMode = 'login', onBackToLanding }: { onSuc
     <div className="auth-wrap">
       <div className="auth-card">
         <div className="auth-logo">
-          <div className="auth-logo-icon">🤖</div>
-          <div className="auth-title">PixelsSelect.AI</div>
+          <img src="/logo.png" alt="PixelHire" style={{ width: 48, height: 48, borderRadius: 14, objectFit: 'contain' }} />
+          <div className="auth-title" style={{ fontWeight: 800, letterSpacing: '-0.02em' }}>Pixel<span style={{ fontWeight: 600, opacity: 0.85 }}>Hire</span><span style={{ color: '#4F46E5', fontWeight: 700 }}>.AI</span></div>
           <div className="auth-sub">{headings[mode]}</div>
         </div>
 
@@ -171,8 +171,8 @@ function LoadingScreen() {
       minHeight: '100vh', display: 'flex', alignItems: 'center',
       justifyContent: 'center', background: '#F1F5F9', flexDirection: 'column', gap: 16,
     }}>
-      <div style={{ fontSize: 52 }}>🤖</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A' }}>PixelsSelect.AI</div>
+      <img src="/logo.png" alt="PixelHire" style={{ width: 52, height: 52, borderRadius: 14, objectFit: 'contain' }} />
+      <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A', letterSpacing: '-0.02em' }}>Pixel<span style={{ fontWeight: 600, opacity: 0.85 }}>Hire</span><span style={{ color: '#4F46E5', fontWeight: 700 }}>.AI</span></div>
       <div style={{ color: '#64748B', fontSize: 13 }}>Loading platform...</div>
     </div>
   );
@@ -200,7 +200,16 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    if (currentUser) loadInterviews();
+    if (currentUser) {
+      // Candidates are guest-only — clear their cookie and hard-redirect to landing
+      if (currentUser.role === 'candidate') {
+        apiCall('POST', '/auth/logout').catch(() => {});
+        setCurrentUser(null);
+        setShowLanding(true);
+        return;
+      }
+      loadInterviews();
+    }
   }, [currentUser, loadInterviews]);
 
   const handleAuthSuccess = (user: User) => {
@@ -235,7 +244,7 @@ export default function HomePage() {
     {
       icon: 'fa-calendar-alt', bg: '#EEF2FF', ic: '#4F46E5',
       val: interviews.length,
-      lbl: currentUser.role === 'candidate' ? 'My Interviews' : 'Total',
+      lbl: 'Total',
     },
     {
       icon: 'fa-clock', bg: '#FEF3C7', ic: '#D97706',

@@ -13,10 +13,7 @@ import { ChatPanel } from '../../../components/interview/ChatPanel';
 import { StartOverlay } from '../../../components/interview/StartOverlay';
 import { CompleteOverlay } from '../../../components/interview/CompleteOverlay';
 
-const VISION_INTERVAL_MS = 3000;
-
-interface ScoreBox { label: string; val: number; color: string; }
-interface CompletedState { title: string; sub: string; scores: ScoreBox[]; }
+const VISION_INTERVAL_MS = 5000;
 
 const hasMeaningfulTranscript = (text: string) => /[A-Za-z0-9]/.test(text);
 const isCodingPromptText = (text: string) =>
@@ -31,7 +28,6 @@ export default function InterviewPage() {
     const [loadError, setLoadError] = useState('');
     const [started, setStarted] = useState(false);
     const [completed, setCompleted] = useState(false);
-    const [completedData, setCompletedData] = useState<CompletedState | null>(null);
     const [startLoading, setStartLoading] = useState(false);
     const [startError, setStartError] = useState('');
 
@@ -43,7 +39,6 @@ export default function InterviewPage() {
     const [verifyStatus, setVerifyStatus] = useState<'idle' | 'early' | 'expired' | 'ok'>('idle');
     const [verifyScheduledAt, setVerifyScheduledAt] = useState('');
     const [verifyLoading, setVerifyLoading] = useState(false);
-    const [verifiedViaMagicLink, setVerifiedViaMagicLink] = useState(false);
 
     // ── Messages ───────────────────────────────────────────────────────────────
     const [messages, setMessages] = useState<Message[]>([]);
@@ -58,11 +53,14 @@ export default function InterviewPage() {
     const codeInputRef = useRef('');
     const codeOpenRef = useRef(false);
 
-    // ── Voice / STT ───────────────────────────────────────────────────────────
+    // ── Voice / STT / Media ───────────────────────────────────────────────────
     const [voiceOn, setVoiceOn] = useState(true);
     const [isListening, setIsListening] = useState(false);
     const [sttStatus, setSttStatus] = useState('');
     const voiceOnRef = useRef(true);
+    
+    const [cameraReady, setCameraReady] = useState<boolean>(false);
+    const [micReady, setMicReady] = useState<boolean>(false);
     const isListeningRef = useRef(false);
     const isTtsSpeaking = useRef(false);
     const pendingAutoListen = useRef(false);
@@ -373,6 +371,15 @@ export default function InterviewPage() {
                 interviewCompleteSentRef.current = true;
                 // Don't call endInterview immediately - wait for TTS to complete
                 // The TTS completion will trigger endInterview via onSpeakingDone
+                
+                // M1 Safety Net: If TTS completely fails (no audio plays and onSpeakingDone never fires),
+                // we force-end the interview after 10 seconds to prevent the candidate getting stuck forever.
+                setTimeout(() => {
+                    if (interviewCompleteSentRef.current && !doneRef.current) {
+                        console.warn('[Safety Net] TTS never completed INTERVIEW_COMPLETE. Forcing endInterview.');
+                        endInterview();
+                    }
+                }, 30000);
             }
         }
         if (m.role === 'candidate') {
@@ -475,10 +482,20 @@ export default function InterviewPage() {
                     pendingAutoListen.current = true;
                 }
             };
-            whisperRecorder.current.start(250);
-            isListeningRef.current = true;
-            setIsListening(true);
-            setSttStatus('🎤 Listening…');
+            try {
+                whisperRecorder.current.start(250);
+                isListeningRef.current = true;
+                setIsListening(true);
+                setSttStatus('🎤 Listening…');
+            } catch (err) {
+                console.error("Failed to start MediaRecorder:", err);
+                isListeningRef.current = false;
+                setIsListening(false);
+                setSttStatus('🎤 Mic error - Retrying soon');
+                // Auto-retry after a short delay if we hit a transient stream error
+                setTimeout(() => { if (!isTtsSpeaking.current) startListening(); }, 2000);
+                return;
+            }
 
 
             // Safety: stop listening after 30s max to avoid infinite silent recording
@@ -762,23 +779,10 @@ export default function InterviewPage() {
                     method: 'POST', body: fd, credentials: 'include',
                 });
             }
-            const result = await apiCall<{
-                answer_score?: number; code_score?: number;
-                emotion_score?: number; integrity_score?: number; ai_feedback?: string;
-            }>('POST', `/interview-session/end/${token}`);
-
-            setCompletedData({
-                title: 'Interview Complete!',
-                sub: result?.ai_feedback ? 'Results have been calculated.' : 'Processing results...',
-                scores: result ? [
-                    { label: 'Q&A Score', val: result.answer_score ?? 0, color: '#4F46E5' },
-                    { label: 'Code Score', val: result.code_score ?? 0, color: '#10B981' },
-                    { label: 'Confidence', val: result.emotion_score ?? 0, color: '#F59E0B' },
-                    { label: 'Integrity', val: result.integrity_score ?? 0, color: '#EF4444' },
-                ] : [],
-            });
+            // Trigger evaluation on backend — response is stripped for candidates
+            await apiCall('POST', `/interview-session/end/${token}`);
         } catch {
-            setCompletedData({ title: 'Interview Complete!', sub: 'Processing results...', scores: [] });
+            // Interview still considered complete even if eval call fails
         } finally {
             recorder.current = null;
             recordingStreamRef.current = null;
@@ -965,27 +969,10 @@ export default function InterviewPage() {
             setSession(data);
             setNeedsVerify(false);
 
-            // If already completed — jump straight to the results overlay
+            // If already completed — show thank-you screen
             if ((data.status as string).toLowerCase() === 'completed') {
                 setCompleted(true);
                 setStarted(true);
-                setCompletedData({
-                    title: 'Interview Complete!',
-                    sub: data.ai_feedback ? 'Your results are below.' : 'Results have been processed.',
-                    scores: [
-                        { label: 'Q&A Score', val: data.answer_score ?? 0, color: '#4F46E5' },
-                        { label: 'Code Score', val: data.code_score ?? 0, color: '#10B981' },
-                        { label: 'Confidence', val: data.emotion_score ?? 0, color: '#F59E0B' },
-                        { label: 'Integrity', val: data.integrity_score ?? 0, color: '#EF4444' },
-                    ],
-                });
-                // Check if candidate still needs to register (magic_link user without a password)
-                try {
-                    const me = await apiCall<{ auth_provider?: string }>('GET', '/users/me');
-                    if (me.auth_provider === 'magic_link') {
-                        setVerifiedViaMagicLink(true);
-                    }
-                } catch { /* not authenticated or non-candidate — skip */ }
                 return;
             }
 
@@ -994,6 +981,8 @@ export default function InterviewPage() {
                 .then(async (s) => {
                     camStream.current = s;
                     setLocalStream(s);
+                    setCameraReady(s.getVideoTracks().length > 0);
+                    setMicReady(s.getAudioTracks().length > 0);
                     if (previewVideoRef.current) previewVideoRef.current.srcObject = s;
                     // Fetch JWT for WebSocket auth (cookies don't work cross-origin for WS)
                     try {
@@ -1001,7 +990,10 @@ export default function InterviewPage() {
                         if (wt?.token) setJwtToken(wt.token);
                     } catch { /* WebRTC will be unavailable */ }
                 })
-                .catch(() => { });
+                .catch(() => {
+                    setCameraReady(false);
+                    setMicReady(false);
+                });
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
             // 401 = not authenticated → show verification form (magic-link flow)
@@ -1063,7 +1055,6 @@ export default function InterviewPage() {
 
             // status === 'ok' — JWT cookie has been set, reload session
             setVerifyStatus('ok');
-            setVerifiedViaMagicLink(true);
             await loadSession();
         } catch {
             setVerifyError('Network error. Please try again.');
@@ -1260,17 +1251,13 @@ export default function InterviewPage() {
                     loading={startLoading}
                     error={startError}
                     onStart={beginInterview}
+                    cameraReady={cameraReady}
+                    micReady={micReady}
                 />
             )}
 
             {/* Post-completion overlay */}
-            <CompleteOverlay
-                visible={completed}
-                title={completedData?.title}
-                subtitle={completedData?.sub}
-                scores={completedData?.scores}
-                showRegister={verifiedViaMagicLink}
-            />
+            <CompleteOverlay visible={completed} />
 
             {/* Interview Room */}
             {started && (

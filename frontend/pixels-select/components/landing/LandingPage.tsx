@@ -22,8 +22,8 @@ export function LandingPage({ onLogin, onRegister }: LandingPageProps) {
             <nav className={`landing-nav${scrolled ? ' scrolled' : ''}`}>
                 <div className="landing-container landing-nav-inner">
                     <div className="landing-brand">
-                        <div className="landing-brand-icon">🤖</div>
-                        <span className="landing-brand-text">PixelsSelect<span className="landing-brand-ai">.AI</span></span>
+                        <img src="/logo.png" alt="PixelHire"  style={{ width: 36, height: 36, borderRadius: 10, objectFit: 'contain' }} />
+                        <span className="landing-brand-text" style={{ fontWeight: 800, letterSpacing: '-0.02em' }}>Pixel<span style={{ fontWeight: 600, opacity: 0.85 }}>Hire</span><span className="landing-brand-ai">.AI</span></span>
                     </div>
                     <div className="landing-nav-links">
                         <a href="#features">Features</a>
@@ -64,7 +64,7 @@ export function LandingPage({ onLogin, onRegister }: LandingPageProps) {
                     </p>
                     <div className="landing-hero-actions">
                         <button className="landing-btn-primary landing-btn-lg" onClick={onRegister}>
-                            <i className="fas fa-rocket" /> Start Free Trial
+                            <i className="fas fa-rocket" /> Start 
                         </button>
                         <button className="landing-btn-outline landing-btn-lg" onClick={onLogin}>
                             <i className="fas fa-sign-in-alt" /> Sign In
@@ -97,7 +97,7 @@ export function LandingPage({ onLogin, onRegister }: LandingPageProps) {
                         <div className="landing-section-badge">Features</div>
                         <h2 className="landing-section-title">Everything you need for<br /><span className="landing-gradient-text">modern hiring</span></h2>
                         <p className="landing-section-desc">
-                            From scheduling to scoring, PixelsSelect handles the entire interview lifecycle.
+                            From scheduling to scoring, PixelHire handles the entire interview lifecycle.
                         </p>
                     </div>
                     <div className="landing-features-grid">
@@ -193,8 +193,8 @@ export function LandingPage({ onLogin, onRegister }: LandingPageProps) {
                 <div className="landing-container landing-footer-inner">
                     <div className="landing-footer-brand">
                         <div className="landing-brand">
-                            <div className="landing-brand-icon" style={{ width: 28, height: 28, borderRadius: 8, fontSize: 14 }}>🤖</div>
-                            <span className="landing-brand-text" style={{ fontSize: 16 }}>PixelsSelect<span className="landing-brand-ai">.AI</span></span>
+                            <img src="/logo.png" alt="PixelHire" style={{ width: 28, height: 28, borderRadius: 8, objectFit: 'contain' }} />
+                            <span className="landing-brand-text" style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-0.02em' }}>Pixel<span style={{ fontWeight: 600, opacity: 0.85 }}>Hire</span><span className="landing-brand-ai">.AI</span></span>
                         </div>
                         <p className="landing-footer-tagline">AI-powered interviews that find the best talent.</p>
                     </div>
@@ -204,7 +204,7 @@ export function LandingPage({ onLogin, onRegister }: LandingPageProps) {
                         <a href="#stats">Results</a>
                     </div>
                     <div className="landing-footer-copy">
-                        © {new Date().getFullYear()} PixelsSelect.AI — All rights reserved.
+                        © {new Date().getFullYear()} PixelHire.AI — All rights reserved.
                     </div>
                 </div>
             </footer>

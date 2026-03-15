@@ -33,9 +33,9 @@ export function Sidebar({ currentUser, activePage, onNavigate, onLogout }: Sideb
         <aside className="sidebar">
             {/* Logo */}
             <div className="sidebar-logo">
-                <div className="logo-icon">🤖</div>
+                <img src="/logo.png" alt="PixelHire" style={{ width: 36, height: 36, borderRadius: 10, objectFit: 'contain' }} />
                 <div>
-                    <div className="logo-text">PixelsSelect</div>
+                    <div className="logo-text" style={{ fontWeight: 800, fontSize: 16, letterSpacing: '-0.02em' }}>Pixel<span style={{ fontWeight: 600, opacity: 0.85 }}>Hire</span></div>
                     <div className="logo-sub">AI Platform</div>
                 </div>
             </div>

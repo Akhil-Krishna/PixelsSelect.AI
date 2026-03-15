@@ -286,8 +286,8 @@ export default function WatchPage() {
     if (!session) {
         return (
             <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', background: '#0F172A', flexDirection: 'column', gap: 16 }}>
-                <div style={{ fontSize: 48 }}>📡</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: '#F1F5F9' }}>PixelsSelect.AI — Live Monitor</div>
+                <img src="/logo.png" alt="PixelHire" style={{ width: 48, height: 48, borderRadius: 14, objectFit: 'contain' }} />
+                <div style={{ fontSize: 18, fontWeight: 800, color: '#F1F5F9', letterSpacing: '-0.02em' }}>Pixel<span style={{ fontWeight: 600, opacity: 0.85 }}>Hire</span><span style={{ color: '#818CF8', fontWeight: 700 }}>.AI</span> — Live Monitor</div>
                 <div style={{ color: '#94A3B8', fontSize: 13 }}>Loading interview session...</div>
             </div>
         );
@@ -297,7 +297,7 @@ export default function WatchPage() {
         <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
             {/* ── Topbar ── */}
             <div className="topbar">
-                <span className="logo">PixelsSelect.AI</span>
+                <span className="logo" style={{ fontWeight: 800, letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: 8 }}><img src="/logo.png" alt="" style={{ width: 24, height: 24, borderRadius: 6, objectFit: 'contain' }} />Pixel<span style={{ fontWeight: 600, opacity: 0.85 }}>Hire</span><span style={{ color: '#818CF8' }}>.AI</span></span>
                 <span className="sep">|</span>
                 <span className="iv-name">{session.title}</span>
                 <div className={`pill ${isLive ? 'pill-live' : 'pill-wait'}`}>

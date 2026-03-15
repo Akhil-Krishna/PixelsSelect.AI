@@ -242,11 +242,12 @@ async def end_interview_simple(
     current_user: User = Depends(get_current_user),
 ):
     """
-    No-body alias called by the candidate's frontend when the interview finishes.
-    Delegates to the full evaluation pipeline with empty optional fields.
+    Candidate-facing endpoint: runs the full evaluation but returns
+    only a simple status — candidates must not see their scores.
     """
     empty_payload = CompleteInterviewRequest()
-    return await _run_complete(interview_token, empty_payload, db, current_user)
+    await _run_complete(interview_token, empty_payload, db, current_user)
+    return {"status": "completed", "message": "Interview completed successfully."}
 
 
 @router.post("/complete/{interview_token}", response_model=EvaluationResult)
@@ -268,7 +269,10 @@ async def _run_complete(
     iv = await _get_iv(interview_token, db)
     AccessPolicy.ensure_candidate_owner(iv, current_user)
 
+    # If already completed, return stripped response for candidates
     if iv.status == InterviewStatus.COMPLETED:
+        if current_user.role == UserRole.CANDIDATE:
+            return {"status": "completed", "message": "Interview already completed."}
         return EvaluationResult(
             overall_score=float(iv.overall_score or 0),
             answer_score=float(iv.answer_score or 0),

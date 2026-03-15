@@ -25,7 +25,6 @@ from app.core.deps import get_current_user
 from app.models.password_reset import PasswordResetToken
 from app.models.user import Organisation, User, UserRole
 from app.schemas import (
-    CandidateRegisterRequest,
     EmailVerifyRequest,
     ForgotPasswordRequest,
     LoginRequest,
@@ -34,7 +33,6 @@ from app.schemas import (
     OrgRegisterRequest,
     ResetPasswordRequest,
     Token,
-    UserCreate,
     UserOut,
 )
 from app.services.email_service import email_service
@@ -71,7 +69,11 @@ async def get_ws_token(
     WebSocket connections cannot send httpOnly cookies cross-origin, so this
     thin endpoint bridges that gap.  It is itself authenticated via the cookie.
     """
-    token = create_access_token(data={"sub": current_user.id})
+    from datetime import timedelta
+    token = create_access_token(
+        data={"sub": current_user.id, "purpose": "ws"},
+        expires_delta=timedelta(seconds=60),
+    )
     return {"token": token}
 
 
@@ -95,6 +97,14 @@ async def login(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
     if not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account disabled")
+
+    # Candidates are guest-only — they cannot log in
+    if user.role == UserRole.CANDIDATE:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Candidate accounts do not support login. "
+            "Please use the interview link sent to your email.",
+        )
 
     # Staff must have verified their org email before they can log in
     if user.role in (UserRole.ADMIN, UserRole.HR, UserRole.INTERVIEWER) and not user.is_verified:
@@ -143,37 +153,7 @@ async def logout(
     return {"message": "Logged out"}
 
 
-# ── Candidate self-registration (candidates only) ─────────────────────────────
 
-@router.post("/register", response_model=UserOut, status_code=201)
-@limiter.limit(REGISTER_RATE)
-async def register(request: Request, payload: UserCreate, db: AsyncSession = Depends(get_db)):
-    """Open self-registration for candidate accounts only."""
-    if payload.role != UserRole.CANDIDATE:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "Self-registration is only allowed for candidate accounts. "
-            "Staff accounts are created via invitation.",
-        )
-    existing = await db.execute(select(User).where(User.email == payload.email))
-    if existing.scalar_one_or_none():
-        raise HTTPException(400, "Email already registered")
-
-    user = User(
-        email=payload.email,
-        full_name=payload.full_name,
-        hashed_password=get_password_hash(payload.password),
-        role=UserRole.CANDIDATE,
-        is_verified=True,   # Candidates skip email verification
-        auth_provider="local",
-    )
-    db.add(user)
-    await db.flush()
-
-    result = await db.execute(
-        select(User).options(selectinload(User.organisation)).where(User.id == user.id)
-    )
-    return UserOut.model_validate(result.scalar_one())  # type: ignore[arg-type]
 
 
 # ── Organisation registration ─────────────────────────────────────────────────
@@ -331,7 +311,7 @@ async def forgot_password(
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
 
-    if user and user.is_active:
+    if user and user.is_active and user.role != UserRole.CANDIDATE:
         raw_token, token_hash = generate_token()
         reset_record = PasswordResetToken(
             user_id=user.id,
@@ -400,32 +380,4 @@ async def reset_password(
     return {"message": "Password reset successfully. You can now log in."}
 
 
-# ── Optional candidate registration (post-interview) ─────────────────────────
 
-@router.post("/candidate-register")
-async def candidate_register(
-    payload: CandidateRegisterRequest,
-    response: Response,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Allows a candidate who joined via magic link to create a permanent
-    account by setting a password.  Requires existing JWT (from verify-candidate).
-    """
-    if current_user.role != UserRole.CANDIDATE:
-        raise HTTPException(400, "Only candidates can use this endpoint.")
-    if current_user.auth_provider != "magic_link":
-        raise HTTPException(400, "Account already registered.")
-
-    current_user.hashed_password = get_password_hash(payload.password)
-    current_user.auth_provider = "local"
-    current_user.is_verified = True
-    await db.flush()
-
-    # Re-issue a standard-length JWT and cookie
-    token = create_access_token(data={"sub": current_user.id})
-    _set_auth_cookie(response, token)
-
-    logger.info("Candidate registered permanent account: %s", current_user.email)
-    return {"message": "Account created. You can now log in with your email and password."}

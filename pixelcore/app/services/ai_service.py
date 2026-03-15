@@ -535,7 +535,7 @@ def _build_optimized_transcript(messages: List[InterviewMessage]) -> str:
         lines.append(f"{role_label}: {content}")
         if code_snippet:
             # Truncate code snippet for transcript
-            code_preview = code_snippet[:200] + "..." if len(code_snippet) > 200 else code_snippet
+            code_preview = code_snippet[:600] + "..." if len(code_snippet) > 600 else code_snippet
             lines.append(f"[Code: {code_preview}]")
     
     transcript = "\n".join(lines)
@@ -904,7 +904,7 @@ def _build_comprehensive_report(
     sample_qa_review = _extract_sample_qa(messages)
     
     # Coding evaluation
-    coding_evaluation = _extract_coding_evaluation(messages)
+    coding_evaluation = _extract_coding_evaluation(messages, code_score)
     
     # Get strengths and weaknesses from LLM
     strengths = result.get("strengths", ["—"])
@@ -980,11 +980,11 @@ def _extract_sample_qa(messages: List[InterviewMessage]) -> list:
     return qa_pairs[:3] if qa_pairs else []
 
 
-def _extract_coding_evaluation(messages: List[InterviewMessage]) -> dict:
+def _extract_coding_evaluation(messages: List[InterviewMessage], code_score=None) -> dict:
     """Extract coding evaluation metadata from messages.
     
-    Note: Actual code quality is evaluated by the LLM via _EVAL_PROMPT (code_score).
-    This function only extracts metadata for the report.
+    The actual code quality score is evaluated by the LLM via _EVAL_PROMPT (code_score).
+    This function surfaces that score alongside metadata for the report.
     """
     coding_message = None
     for m in messages:
@@ -996,6 +996,7 @@ def _extract_coding_evaluation(messages: List[InterviewMessage]) -> dict:
         return {
             "problem_summary": None,
             "solution_summary": None,
+            "code_score": None,
             "correctness": None,
             "edge_case_handling": None,
             "code_quality_feedback": None
@@ -1005,10 +1006,11 @@ def _extract_coding_evaluation(messages: List[InterviewMessage]) -> dict:
     
     return {
         "problem_summary": "Coding problem was presented during the interview.",
-        "solution_summary": code[:200] + ("..." if len(code) > 200 else ""),
-        "correctness": "See code_score for LLM evaluation.",
+        "solution_summary": code[:600] + ("..." if len(code) > 600 else ""),
+        "code_score": code_score,
+        "correctness": f"AI-evaluated score: {code_score}/100" if code_score is not None else "Not evaluated",
         "edge_case_handling": None,
-        "code_quality_feedback": "Evaluated by AI — see code_score."
+        "code_quality_feedback": f"AI-evaluated code quality: {code_score}/100" if code_score is not None else "Not evaluated"
     }
 
 

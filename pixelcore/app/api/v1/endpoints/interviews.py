@@ -255,7 +255,7 @@ async def list_interviews(
             .where(User.organisation_id == current_user.organisation_id)
         )
     elif current_user.role == UserRole.CANDIDATE:
-        query = select(Interview).where(Interview.candidate_id == current_user.id)
+        raise HTTPException(403, "Candidates do not have dashboard access")
     elif current_user.role == UserRole.INTERVIEWER:
         # Interviewer sees:
         # 1) All interviews assigned to them
