@@ -560,6 +560,28 @@ async def resume_ai(
         raise HTTPException(403, "Access denied")
     iv.ai_paused = False
     await db.flush()
+
+    # Generate an AI continuation message so the candidate doesn't have to speak first
+    try:
+        await db.refresh(iv, ["messages"])
+        history = sorted(iv.messages, key=lambda m: m.timestamp)
+        ai_result = await chat_turn(
+            iv,
+            history,
+            "[system: the interview panel has finished their discussion with the candidate. "
+            "Please continue the interview from where you left off. "
+            "Briefly acknowledge the pause and move on to the next question.]",
+        )
+        ai_text = ai_result.get("text", "")
+        if ai_text:
+            ai_msg = InterviewMessage(interview_id=iv.id, role="ai", content=ai_text)
+            db.add(ai_msg)
+            await db.flush()
+            await db.refresh(ai_msg)
+            return {"ai_paused": False, "message": MessageOut.model_validate(ai_msg)}
+    except Exception as exc:
+        logger.warning("resume_ai: AI continuation failed, resuming without message", exc_info=exc)
+
     return {"ai_paused": False}
 
 
