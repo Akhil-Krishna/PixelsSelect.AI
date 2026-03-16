@@ -41,6 +41,15 @@ export default function WatchPage() {
     const [recStatus, setRecStatus] = useState('Not started');
     const [recLink, setRecLink] = useState('');
 
+    // ── Human Evaluator Feedback ─────────────────────────────────────────────
+    const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+    const [feedbackText, setFeedbackText] = useState('');
+    const [feedbackScore, setFeedbackScore] = useState(5);
+    const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
+    const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+    const [userPausedAI, setUserPausedAI] = useState(false);
+    const pendingLeaveRef = useRef(false);
+
     // ── Media ─────────────────────────────────────────────────────────────────
     const [roomMuted, setRoomMuted] = useState(false);
     const [roomCamOff, setRoomCamOff] = useState(false);
@@ -128,6 +137,10 @@ export default function WatchPage() {
                     if (pollRef.current) clearInterval(pollRef.current);
                     if (metricsRef.current) clearInterval(metricsRef.current);
                     addFlag('Interview completed', 'success', 'fa-flag-checkered');
+                    // Show feedback modal if user paused AI and hasn't submitted yet
+                    if (userPausedAI && !feedbackSubmitted) {
+                        setShowFeedbackModal(true);
+                    }
                     // Load recording
                     const d = await apiCall<InterviewSession>('GET', `/interview-session/join/${token}`);
                     if (d?.has_recording) {
@@ -195,7 +208,22 @@ export default function WatchPage() {
 
                 pollRef.current = setInterval(doPoll, 2000);
                 setTimeout(() => { metricsRef.current = setInterval(doMetrics, 3000); doMetrics(); }, 1000);
-            } catch (e) { console.error(e); }
+
+                // Check if this user has previously paused AI (for page refresh)
+                try {
+                    const fbStatus = await apiCall<{ required: boolean; submitted: boolean }>(
+                        'GET', `/interview-session/feedback-status/${token}`
+                    );
+                    if (fbStatus) {
+                        if (fbStatus.required) setUserPausedAI(true);
+                        if (fbStatus.submitted) setFeedbackSubmitted(true);
+                    }
+                } catch { /* non-critical */ }
+            } catch (e: unknown) {
+                const msg = (e as Error).message || 'Failed to load interview';
+                alert(msg);
+                window.location.href = '/';
+            }
         })();
 
         return () => {
@@ -262,11 +290,56 @@ export default function WatchPage() {
         setRoomCamOff(true);
         setRoomStreamState(roomStream.current ? new MediaStream(roomStream.current.getTracks()) : null);
     };
-    const leaveRoom = () => { roomStream.current?.getTracks().forEach(t => t.stop()); window.location.href = '/'; };
+    const leaveRoom = () => {
+        if (userPausedAI && !feedbackSubmitted) {
+            pendingLeaveRef.current = true;
+            setShowFeedbackModal(true);
+            return;
+        }
+        roomStream.current?.getTracks().forEach(t => t.stop());
+        window.location.href = '/';
+    };
+
+    const submitFeedback = async () => {
+        if (!feedbackText.trim()) return;
+        setFeedbackSubmitting(true);
+        try {
+            await apiCall('POST', `/interview-session/human-feedback/${token}`, {
+                feedback: feedbackText.trim(),
+                score: feedbackScore,
+            });
+            setFeedbackSubmitted(true);
+            setShowFeedbackModal(false);
+            addFlag('Feedback submitted', 'success', 'fa-check-circle');
+            // If user was trying to leave, proceed now
+            if (pendingLeaveRef.current) {
+                pendingLeaveRef.current = false;
+                roomStream.current?.getTracks().forEach(t => t.stop());
+                window.location.href = '/';
+            }
+        } catch (e: unknown) {
+            alert((e as Error).message || 'Failed to submit feedback');
+        } finally {
+            setFeedbackSubmitting(false);
+        }
+    };
+
+    const skipFeedback = () => {
+        setShowFeedbackModal(false);
+        if (pendingLeaveRef.current) {
+            pendingLeaveRef.current = false;
+            roomStream.current?.getTracks().forEach(t => t.stop());
+            window.location.href = '/';
+        }
+    };
 
     const pauseAI = async () => {
-        try { await apiCall('POST', `/interview-session/pause-ai/${token}`); setAiPaused(true); addFlag('AI paused', 'info', 'fa-pause-circle'); }
-        catch (e: unknown) { alert((e as Error).message); }
+        try {
+            await apiCall('POST', `/interview-session/pause-ai/${token}`);
+            setAiPaused(true);
+            setUserPausedAI(true);
+            addFlag('AI paused', 'info', 'fa-pause-circle');
+        } catch (e: unknown) { alert((e as Error).message); }
     };
     const resumeAI = async () => {
         try { await apiCall('POST', `/interview-session/resume-ai/${token}`); setAiPaused(false); addFlag('AI resumed', 'success', 'fa-play-circle'); }
@@ -358,6 +431,87 @@ export default function WatchPage() {
                     onResumeAI={resumeAI}
                 />
             </div>
+
+            {/* ── Human Evaluator Feedback Modal ── */}
+            {showFeedbackModal && (
+                <div style={{
+                    position: 'fixed', inset: 0, zIndex: 9999,
+                    background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                    <div style={{
+                        background: '#1E293B', borderRadius: 16, padding: 28,
+                        width: 440, maxWidth: '90vw',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+                    }}>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: '#F1F5F9', marginBottom: 4 }}>
+                            📝 Candidate Feedback
+                        </div>
+                        <div style={{ fontSize: 13, color: '#94A3B8', marginBottom: 20, lineHeight: 1.5 }}>
+                            You paused the AI during this interview. Please share your evaluation of the candidate.
+                        </div>
+
+                        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#CBD5E1', marginBottom: 6 }}>
+                            Written Feedback
+                        </label>
+                        <textarea
+                            value={feedbackText}
+                            onChange={e => setFeedbackText(e.target.value)}
+                            placeholder="e.g. Candidate demonstrated strong system design skills but struggled with edge cases..."
+                            rows={4}
+                            style={{
+                                width: '100%', padding: 12, borderRadius: 10,
+                                background: '#0F172A', border: '1px solid rgba(255,255,255,0.1)',
+                                color: '#F1F5F9', fontSize: 13, resize: 'vertical',
+                                outline: 'none', lineHeight: 1.5,
+                            }}
+                        />
+
+                        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#CBD5E1', marginTop: 16, marginBottom: 6 }}>
+                            Score: {feedbackScore}/10
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <span style={{ fontSize: 12, color: '#64748B' }}>0</span>
+                            <input
+                                type="range" min={0} max={10} step={1}
+                                value={feedbackScore}
+                                onChange={e => setFeedbackScore(Number(e.target.value))}
+                                style={{ flex: 1, accentColor: '#818CF8' }}
+                            />
+                            <span style={{ fontSize: 12, color: '#64748B' }}>10</span>
+                            <span style={{
+                                background: '#818CF8', color: '#fff', fontWeight: 700,
+                                padding: '4px 10px', borderRadius: 8, fontSize: 14, minWidth: 32, textAlign: 'center',
+                            }}>{feedbackScore}</span>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
+                            <button
+                                onClick={skipFeedback}
+                                style={{
+                                    padding: '8px 18px', borderRadius: 8, fontSize: 13,
+                                    background: 'transparent', border: '1px solid rgba(255,255,255,0.15)',
+                                    color: '#94A3B8', cursor: 'pointer',
+                                }}
+                            >
+                                Skip
+                            </button>
+                            <button
+                                onClick={submitFeedback}
+                                disabled={feedbackSubmitting || !feedbackText.trim()}
+                                style={{
+                                    padding: '8px 22px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                                    background: feedbackSubmitting || !feedbackText.trim() ? '#475569' : '#818CF8',
+                                    color: '#fff', border: 'none', cursor: feedbackSubmitting ? 'wait' : 'pointer',
+                                }}
+                            >
+                                {feedbackSubmitting ? 'Submitting...' : 'Submit Feedback'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

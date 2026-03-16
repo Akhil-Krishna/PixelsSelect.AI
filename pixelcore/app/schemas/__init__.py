@@ -213,6 +213,7 @@ class InterviewOut(BaseModel):
     code_score: Optional[float] = None
     emotion_score: Optional[float] = None
     cheating_score: Optional[float] = None
+    human_evaluator_score: Optional[float] = None
     integrity_score: Optional[float] = None
     overall_score: Optional[float] = None
     passed: Optional[bool] = None
@@ -289,6 +290,7 @@ class ScoreBreakdown(BaseModel):
     code_score: Optional[float] = None
     emotion_score: Optional[float] = None
     integrity_score: Optional[float] = None
+    human_evaluator_score: Optional[float] = None
     overall_score: float
     passed: bool
     weights_used: dict = Field(default_factory=dict)
@@ -305,6 +307,7 @@ class EvaluationResult(BaseModel):
     weaknesses: List[str] = Field(default_factory=list)
     ai_feedback: str
     cheating_score: Optional[float] = None
+    human_evaluator_score: Optional[float] = None
     score_breakdown: Optional[ScoreBreakdown] = None
     cheating_flags: List[str] = Field(default_factory=list)
 

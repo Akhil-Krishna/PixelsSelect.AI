@@ -18,6 +18,7 @@ from app.core.deps import get_current_user
 from app.core.security import SecurityService
 from app.models.interview import (
     Interview, InterviewInterviewer, InterviewMessage, InterviewStatus, VisionLog,
+    HumanEvaluatorFeedback,
 )
 from app.models.user import User, UserRole
 from app.schemas import (
@@ -310,7 +311,28 @@ async def _run_complete(
         final_cheating = float(payload.cheating_score)
 
     msgs = sorted(iv.messages, key=lambda m: m.timestamp)
-    evaluation = await complete_interview_evaluation(iv, msgs, vision_summary, final_cheating)
+
+    # Load human evaluator feedback for the evaluation prompt + weighting
+    fb_result = await db.execute(
+        select(HumanEvaluatorFeedback)
+        .where(HumanEvaluatorFeedback.interview_id == iv.id)
+    )
+    human_fb_rows = fb_result.scalars().all()
+    human_feedback_list = None
+    if human_fb_rows:
+        human_feedback_list = []
+        for fb in human_fb_rows:
+            # Resolve evaluator name
+            ev = await db.get(User, fb.evaluator_id)
+            human_feedback_list.append({
+                "evaluator_name": ev.full_name if ev else "Unknown",
+                "feedback": fb.feedback,
+                "score": fb.score,
+            })
+
+    evaluation = await complete_interview_evaluation(
+        iv, msgs, vision_summary, final_cheating, human_feedback_list,
+    )
 
     iv.status = InterviewStatus.COMPLETED
     iv.ended_at = datetime.now(timezone.utc)
@@ -319,6 +341,7 @@ async def _run_complete(
     iv.emotion_score = evaluation.get("emotion_score")
     iv.integrity_score = evaluation.get("integrity_score")
     iv.cheating_score = evaluation.get("cheating_score")
+    iv.human_evaluator_score = evaluation.get("human_evaluator_score")
     iv.overall_score = evaluation.get("overall_score")
     iv.passed = evaluation.get("passed")
     iv.ai_feedback = evaluation.get("ai_feedback")
@@ -517,6 +540,11 @@ async def pause_ai(
     if not AccessPolicy.is_org_viewer(iv, current_user):
         raise HTTPException(403, "Access denied")
     iv.ai_paused = True
+    # Track who paused AI (for human evaluator feedback requirement)
+    paused_list = list(iv.ai_paused_by or [])
+    if current_user.id not in paused_list:
+        paused_list.append(current_user.id)
+        iv.ai_paused_by = paused_list
     await db.flush()
     return {"ai_paused": True}
 
@@ -593,4 +621,80 @@ async def report_tab_switch(
         await db.flush()
 
     return {"tab_switch_count": iv.tab_switch_count}
+
+
+# ── Human Evaluator Feedback ──────────────────────────────────────────────────
+
+class HumanFeedbackPayload(BaseModel):
+    feedback: str
+    score: int  # 0–10
+
+
+@router.post("/human-feedback/{interview_token}")
+async def submit_human_feedback(
+    interview_token: str,
+    payload: HumanFeedbackPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Submit human evaluator feedback for an interview."""
+    if payload.score < 0 or payload.score > 10:
+        raise HTTPException(400, "Score must be between 0 and 10")
+    if not payload.feedback.strip():
+        raise HTTPException(400, "Feedback text is required")
+
+    iv = await _get_iv(interview_token, db)
+    if not AccessPolicy.is_org_viewer(iv, current_user):
+        raise HTTPException(403, "Access denied")
+
+    # Check if already submitted
+    existing = await db.execute(
+        select(HumanEvaluatorFeedback).where(
+            HumanEvaluatorFeedback.interview_id == iv.id,
+            HumanEvaluatorFeedback.evaluator_id == current_user.id,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(409, "Feedback already submitted")
+
+    fb = HumanEvaluatorFeedback(
+        interview_id=iv.id,
+        evaluator_id=current_user.id,
+        feedback=payload.feedback.strip(),
+        score=payload.score,
+    )
+    db.add(fb)
+    await db.flush()
+    return {"status": "submitted", "id": fb.id}
+
+
+@router.get("/feedback-status/{interview_token}")
+async def get_feedback_status(
+    interview_token: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Check if the current user needs to / has submitted feedback."""
+    iv = await _get_iv(interview_token, db)
+    if not AccessPolicy.is_org_viewer(iv, current_user):
+        raise HTTPException(403, "Access denied")
+
+    paused_by = list(iv.ai_paused_by or [])
+    required = current_user.id in paused_by
+
+    submitted = False
+    if required:
+        existing = await db.execute(
+            select(HumanEvaluatorFeedback).where(
+                HumanEvaluatorFeedback.interview_id == iv.id,
+                HumanEvaluatorFeedback.evaluator_id == current_user.id,
+            )
+        )
+        submitted = existing.scalar_one_or_none() is not None
+
+    return {
+        "required": required,
+        "submitted": submitted,
+        "interview_status": iv.status.value,
+    }
 

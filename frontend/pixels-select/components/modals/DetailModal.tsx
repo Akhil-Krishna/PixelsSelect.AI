@@ -17,6 +17,7 @@ const SCORE_SECTIONS = [
     { key: 'code_score', label: 'Code', icon: 'fa-code', color: '#10B981', bg: '#ECFDF5' },
     { key: 'emotion_score', label: 'Confidence', icon: 'fa-face-smile', color: '#F59E0B', bg: '#FFFBEB' },
     { key: 'integrity_score', label: 'Integrity', icon: 'fa-shield-halved', color: '#EF4444', bg: '#FEF2F2' },
+    { key: 'human_evaluator_score', label: 'Human Review', icon: 'fa-user-check', color: '#7C3AED', bg: '#F5F3FF', outOf10: true },
 ] as const;
 
 const REC_COLORS: Record<string, { bg: string; color: string; border: string }> = {
@@ -96,16 +97,19 @@ export function DetailModal({ interview: iv, currentUserRole, onClose }: DetailM
 
                         {/* Sub-Score Cards */}
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10, marginBottom: 16 }}>
-                            {SCORE_SECTIONS.map(({ key, label, icon, color, bg }) => {
+                            {SCORE_SECTIONS.map(({ key, label, icon, color, bg, ...rest }) => {
                                 const val = iv[key] as number | undefined;
                                 if (val == null) return null;
+                                const isOutOf10 = 'outOf10' in rest && rest.outOf10;
                                 return (
                                     <div key={key} style={{
                                         background: bg, borderRadius: 10, padding: '14px 10px',
                                         textAlign: 'center', borderTop: `3px solid ${color}`,
                                     }}>
                                         <i className={`fas ${icon}`} style={{ color, fontSize: 16, marginBottom: 6, display: 'block' }} />
-                                        <div style={{ fontSize: 24, fontWeight: 800, color }}>{val.toFixed(1)}%</div>
+                                        <div style={{ fontSize: 24, fontWeight: 800, color }}>
+                                            {isOutOf10 ? `${val.toFixed(1)}/10` : `${val.toFixed(1)}%`}
+                                        </div>
                                         <div style={{ fontSize: 10, color: '#64748B', marginTop: 3, textTransform: 'uppercase', fontWeight: 600 }}>{label}</div>
                                     </div>
                                 );

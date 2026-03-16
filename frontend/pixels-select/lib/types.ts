@@ -44,6 +44,7 @@ export interface Interview {
     emotion_score?: number;
     integrity_score?: number;
     cheating_score?: number;
+    human_evaluator_score?: number;
     ai_feedback?: string;
     strengths?: string[];
     weaknesses?: string[];

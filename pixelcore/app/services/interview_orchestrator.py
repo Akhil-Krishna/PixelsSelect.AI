@@ -100,17 +100,20 @@ class InterviewOrchestrator:
         messages: List[InterviewMessage],
         emotion_data: Optional[dict],
         cheating_score: Optional[float],
+        human_feedback: Optional[List[dict]] = None,
     ) -> Dict[str, Any]:
         if settings.AI_LOCAL_FASTPATH_ENABLED and not settings.CELERY_REALTIME_ENABLED:
             return await AIService.generate_final_evaluation(
                 interview=iv, messages=messages,
                 emotion_data=emotion_data, cheating_score=cheating_score,
+                human_feedback=human_feedback,
             )
 
         async def _fallback():
             return await AIService.generate_final_evaluation(
                 interview=iv, messages=messages,
                 emotion_data=emotion_data, cheating_score=cheating_score,
+                human_feedback=human_feedback,
             )
 
         return await run_task_with_fallback(
@@ -120,6 +123,7 @@ class InterviewOrchestrator:
                 "messages": _serialize_messages(messages),
                 "emotion_data": emotion_data,
                 "cheating_score": cheating_score,
+                "human_feedback": human_feedback,
             },
             fallback_callable=_fallback,
             endpoint_name="/interview-session/complete",

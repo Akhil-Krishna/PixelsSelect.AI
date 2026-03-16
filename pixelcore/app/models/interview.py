@@ -82,6 +82,7 @@ class Interview(Base):
 
     # Interviewer control
     ai_paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_paused_by: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
     tab_switch_count: Mapped[int] = mapped_column(Integer, default=0)
     manual_questions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
@@ -90,6 +91,7 @@ class Interview(Base):
     code_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     emotion_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     cheating_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    human_evaluator_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     integrity_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     overall_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     passed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
@@ -143,6 +145,9 @@ class Interview(Base):
     )
     vision_logs: Mapped[List["VisionLog"]] = relationship(
         "VisionLog", back_populates="interview", cascade="all, delete-orphan"
+    )
+    human_feedback: Mapped[List["HumanEvaluatorFeedback"]] = relationship(
+        "HumanEvaluatorFeedback", back_populates="interview", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
@@ -225,3 +230,29 @@ class VisionLog(Base):
     interview: Mapped["Interview"] = relationship(
         "Interview", back_populates="vision_logs"
     )
+
+
+class HumanEvaluatorFeedback(Base):
+    """Feedback submitted by HR/Admin/Interviewer who paused the AI."""
+
+    __tablename__ = "human_evaluator_feedback"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    interview_id: Mapped[str] = mapped_column(
+        ForeignKey("interviews.id"), nullable=False, index=True
+    )
+    evaluator_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"), nullable=False
+    )
+    feedback: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)  # 0–10
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+    interview: Mapped["Interview"] = relationship(
+        "Interview", back_populates="human_feedback"
+    )
+    evaluator: Mapped["User"] = relationship("User")  # type: ignore[name-defined]

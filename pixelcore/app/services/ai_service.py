@@ -627,6 +627,7 @@ class AIService:
         messages: List[InterviewMessage],
         emotion_data: Optional[dict] = None,
         cheating_score: Optional[float] = None,
+        human_feedback: Optional[List[dict]] = None,
     ) -> dict:
         """
         Generate weighted evaluation scores after interview completion.
@@ -675,6 +676,23 @@ class AIService:
             candidate_name=candidate_name,
             tab_switch_count=tab_switch_count,
         )
+
+        # Inject human evaluator feedback into the prompt (if any)
+        if human_feedback:
+            hf_lines = ["\n\n--- HUMAN EVALUATOR FEEDBACK ---"]
+            hf_lines.append(
+                "The following feedback was provided by human evaluators who observed "
+                "and interacted with the candidate during the interview. "
+                "Consider this feedback alongside your own analysis when scoring.\n"
+            )
+            for hf in human_feedback:
+                hf_lines.append(f"{hf['evaluator_name']} (Score: {hf['score']}/10):")
+                hf_lines.append(f'  "{hf["feedback"]}"')
+                hf_lines.append("")
+            avg_human = sum(h["score"] for h in human_feedback) / len(human_feedback)
+            hf_lines.append(f"Average Human Evaluator Score: {avg_human:.1f}/10")
+            hf_lines.append("--- END HUMAN EVALUATOR FEEDBACK ---")
+            prompt += "\n".join(hf_lines)
 
         # Call LLM with detailed logging — generous token limit for structured JSON
         try:
@@ -756,21 +774,37 @@ class AIService:
         code = result.get("code_score")
         weights: dict
 
+        # Compute AI-only overall first (same logic as before)
         if code is not None and emotion_score is not None and integrity_score is not None:
-            overall = answer * 0.50 + float(code) * 0.25 + emotion_score * 0.15 + integrity_score * 0.10
-            weights = {"answer": 0.50, "code": 0.25, "emotion": 0.15, "integrity": 0.10}
+            ai_overall = answer * 0.50 + float(code) * 0.25 + emotion_score * 0.15 + integrity_score * 0.10
+            ai_weights = {"answer": 0.50, "code": 0.25, "emotion": 0.15, "integrity": 0.10}
         elif code is not None and emotion_score is not None:
-            overall = answer * 0.55 + float(code) * 0.30 + emotion_score * 0.15
-            weights = {"answer": 0.55, "code": 0.30, "emotion": 0.15}
+            ai_overall = answer * 0.55 + float(code) * 0.30 + emotion_score * 0.15
+            ai_weights = {"answer": 0.55, "code": 0.30, "emotion": 0.15}
         elif code is not None:
-            overall = answer * 0.60 + float(code) * 0.40
-            weights = {"answer": 0.60, "code": 0.40}
+            ai_overall = answer * 0.60 + float(code) * 0.40
+            ai_weights = {"answer": 0.60, "code": 0.40}
         elif emotion_score is not None:
-            overall = answer * 0.75 + emotion_score * 0.25
-            weights = {"answer": 0.75, "emotion": 0.25}
+            ai_overall = answer * 0.75 + emotion_score * 0.25
+            ai_weights = {"answer": 0.75, "emotion": 0.25}
         else:
-            overall = answer
-            weights = {"answer": 1.0}
+            ai_overall = answer
+            ai_weights = {"answer": 1.0}
+
+        # Blend with human evaluator score if available (40% human, 60% AI)
+        if human_feedback:
+            avg_human_score = sum(h["score"] for h in human_feedback) / len(human_feedback)
+            human_score_normalized = avg_human_score * 10.0  # 0-10 → 0-100
+            overall = human_score_normalized * 0.40 + ai_overall * 0.60
+            weights = {
+                "human_evaluator": 0.40,
+                **{k: round(v * 0.60, 2) for k, v in ai_weights.items()},
+            }
+            result["human_evaluator_score"] = round(avg_human_score, 1)
+            result["human_evaluator_score_normalized"] = round(human_score_normalized, 1)
+        else:
+            overall = ai_overall
+            weights = ai_weights
 
         result["overall_score"] = round(float(overall), 1)
         result["passed"] = result["overall_score"] >= 60.0
@@ -942,6 +976,7 @@ def _build_comprehensive_report(
         "emotion_score": result.get("emotion_score"),
         "integrity_score": result.get("integrity_score"),
         "cheating_score": result.get("cheating_score"),
+        "human_evaluator_score": result.get("human_evaluator_score"),
         "weights_used": result.get("weights_used", {}),
     }
     
