@@ -13,7 +13,7 @@ import { ChatPanel } from '../../../components/interview/ChatPanel';
 import { StartOverlay } from '../../../components/interview/StartOverlay';
 import { CompleteOverlay } from '../../../components/interview/CompleteOverlay';
 
-const VISION_INTERVAL_MS = 5000;
+const VISION_INTERVAL_MS = 3000;
 
 const hasMeaningfulTranscript = (text: string) => /[A-Za-z0-9]/.test(text);
 const isCodingPromptText = (text: string) =>
