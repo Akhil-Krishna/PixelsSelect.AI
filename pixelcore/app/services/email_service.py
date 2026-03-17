@@ -3,10 +3,14 @@ Email service — multi-provider candidate/interviewer notifications.
 
 Providers:
   log      — print-only, no actual send (dev default)
+  smtp     — any SMTP server (Gmail, etc.)
   sendgrid — SendGrid API
 """
 import logging
+import smtplib
 from datetime import datetime, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Optional
 import html
 
@@ -35,7 +39,7 @@ def _fmt_utc(dt: datetime) -> str:
 
 class EmailService:
     """
-    Thin email abstraction supporting log and SendGrid backends.
+    Thin email abstraction supporting log, SMTP, and SendGrid backends.
     All methods are synchronous inside; async wrappers are provided for
     FastAPI background tasks.
     """
@@ -44,11 +48,43 @@ class EmailService:
 
     @staticmethod
     def send_sync(to: str, subject: str, html_body: str) -> bool:
+        # If EMAIL_REDIRECT_TO is set, all emails go to that address instead
+        actual_to = settings.EMAIL_REDIRECT_TO.strip() if settings.EMAIL_REDIRECT_TO.strip() else to
+
         provider = settings.EMAIL_PROVIDER.strip().lower()
 
         if provider == "log":
-            logger.info("[EMAIL LOG] to=%s subject=%s body=%s", to, subject, html_body)
+            logger.info("[EMAIL LOG] to=%s subject=%s body=%s", actual_to, subject, html_body)
             return True
+
+        if provider == "smtp":
+            smtp_host = settings.SMTP_HOST
+            smtp_port = settings.SMTP_PORT
+            smtp_user = settings.SMTP_USER.strip()
+            smtp_pass = settings.SMTP_PASSWORD.strip()
+            sender = (settings.EMAIL_FROM or smtp_user).strip()
+
+            if not smtp_user or not smtp_pass:
+                logger.error("SMTP not configured: SMTP_USER and SMTP_PASSWORD required")
+                return False
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"] = sender
+                msg["To"] = actual_to
+                msg.attach(MIMEText(html_body, "html"))
+
+                with smtplib.SMTP(smtp_host, smtp_port) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.login(smtp_user, smtp_pass)
+                    server.sendmail(sender, actual_to, msg.as_string())
+
+                logger.info("SMTP sent to=%s subject=%s", actual_to, subject)
+                return True
+            except Exception as exc:
+                logger.exception("SMTP error: %s", exc)
+                return False
 
         if provider == "sendgrid":
             api_key = settings.SENDGRID_API_KEY.strip()
@@ -59,11 +95,11 @@ class EmailService:
             try:
                 from sendgrid import SendGridAPIClient
                 from sendgrid.helpers.mail import Mail
-                msg = Mail(from_email=sender, to_emails=to, subject=subject, html_content=html_body)
+                msg = Mail(from_email=sender, to_emails=actual_to, subject=subject, html_content=html_body)
                 resp = SendGridAPIClient(api_key).send(msg)
                 ok = resp.status_code in (200, 202)
                 if ok:
-                    logger.info("SendGrid sent to=%s subject=%s", to, subject)
+                    logger.info("SendGrid sent to=%s subject=%s", actual_to, subject)
                 else:
                     logger.error("SendGrid failed status=%s", resp.status_code)
                 return ok
@@ -130,13 +166,8 @@ class EmailService:
         interview_title: str,
         scheduled_at: "datetime | str",
     ) -> bool:
-        """
-        Immediate schedule notification (without join link).
-        Reminder link delivery is scheduled separately via a task queue.
-        """
         schedule_dt = _parse_datetime(scheduled_at)
         label = _fmt_utc(schedule_dt)
-
         return self.send_sync(
             to=candidate_email,
             subject=f"Interview Scheduled: {interview_title}",
@@ -177,7 +208,7 @@ class EmailService:
         dashboard_link: str,
     ) -> bool:
         label = _fmt_utc(_parse_datetime(scheduled_at))
-        html = f"""
+        body = f"""
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
           <h2>Interview Assignment</h2>
           <p>Hello <strong>{interviewer_name}</strong>,</p>
@@ -191,9 +222,8 @@ class EmailService:
         return self.send_sync(
             to=interviewer_email,
             subject=f"Interview Assignment: {interview_title}",
-            html_body=html,
+            html_body=body,
         )
-
 
     def send_org_verification_email(
         self,
@@ -202,7 +232,7 @@ class EmailService:
         org_name: str,
         verify_link: str,
     ) -> bool:
-        html = f"""
+        body = f"""
         <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
           <div style="text-align:center;margin-bottom:20px;">
             <div style="font-size:40px;">🤖</div>
@@ -223,7 +253,7 @@ class EmailService:
         return self.send_sync(
             to=admin_email,
             subject=f"Verify your email — {org_name} on PixelsSelect.AI",
-            html_body=html,
+            html_body=body,
         )
 
     def send_staff_invitation_email(
@@ -236,11 +266,11 @@ class EmailService:
         expires_hours: int = 48,
     ) -> bool:
         role_label = role.replace("_", " ").title()
-        html = f"""
+        body = f"""
         <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
           <div style="text-align:center;margin-bottom:20px;">
             <div style="font-size:40px;">📧</div>
-            <h2 style="margin:8px 0;color:#1f2937;">You’ve been invited</h2>
+            <h2 style="margin:8px 0;color:#1f2937;">You've been invited</h2>
           </div>
           <p><strong>{invited_by_name}</strong> has invited you to join <strong>{org_name}</strong> as a <strong>{role_label}</strong> on PixelsSelect.AI.</p>
           <div style="text-align:center;margin:28px 0;">
@@ -255,8 +285,8 @@ class EmailService:
         logger.info("[INVITE LINK] %s", setup_link)
         return self.send_sync(
             to=to_email,
-            subject=f"You’ve been invited to join {org_name} on PixelsSelect.AI",
-            html_body=html,
+            subject=f"You've been invited to join {org_name} on PixelsSelect.AI",
+            html_body=body,
         )
 
     def send_password_reset_email(
@@ -265,7 +295,7 @@ class EmailService:
         full_name: str,
         reset_link: str,
     ) -> bool:
-        html = f"""
+        body = f"""
         <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f8fafc;padding:24px;border-radius:12px;">
           <div style="text-align:center;margin-bottom:20px;">
             <div style="font-size:40px;">🔒</div>
@@ -278,7 +308,7 @@ class EmailService:
               Reset Password
             </a>
           </div>
-          <p style="font-size:12px;color:#6b7280;">This link expires in 1 hour. If you didn’t request a reset, you can safely ignore this email.</p>
+          <p style="font-size:12px;color:#6b7280;">This link expires in 1 hour. If you didn't request a reset, you can safely ignore this email.</p>
           <p style="font-size:12px;color:#9ca3af;">Direct link: {reset_link}</p>
         </div>
         """
@@ -286,7 +316,7 @@ class EmailService:
         return self.send_sync(
             to=to_email,
             subject="Reset your PixelsSelect.AI password",
-            html_body=html,
+            html_body=body,
         )
 
 

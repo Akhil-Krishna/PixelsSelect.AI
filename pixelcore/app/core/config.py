@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = ""
     SENDGRID_API_KEY: str = ""
     SENDGRID_FROM_EMAIL: str = ""
+    EMAIL_REDIRECT_TO: str = ""
 
     # ─── LLM provider: groq | ollama | openai | mock ──────────────────────────
     LLM_PROVIDER: str = "groq"
